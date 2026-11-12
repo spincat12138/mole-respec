@@ -130,6 +130,18 @@ class PetRespecApp:
             font=("Microsoft YaHei UI", 9),
         )
         style.configure(
+            "CreditTitle.TLabel",
+            background=COLORS["background"],
+            foreground=COLORS["muted"],
+            font=("Microsoft YaHei UI", 8),
+        )
+        style.configure(
+            "CreditValue.TLabel",
+            background=COLORS["background"],
+            foreground=COLORS["accent_dark"],
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        style.configure(
             "Section.TLabel",
             background=COLORS["surface"],
             foreground=COLORS["text"],
@@ -243,6 +255,16 @@ class PetRespecApp:
             font=("Microsoft YaHei UI", 9, "bold"),
         )
         self.connection_badge.pack(side="right")
+        credit_box = ttk.Frame(header, style="App.TFrame")
+        credit_box.pack(side="right", padx=(0, 18))
+        ttk.Label(credit_box, text="鸣谢", style="CreditTitle.TLabel").pack(
+            anchor="e"
+        )
+        ttk.Label(
+            credit_box,
+            text="感谢艾德华大佬支持",
+            style="CreditValue.TLabel",
+        ).pack(anchor="e", pady=(1, 0))
 
         self._build_connection(shell)
 

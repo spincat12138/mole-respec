@@ -109,9 +109,13 @@ def _get_application_dir():
     return Path(__file__).resolve().parent
 
 
-def _record_pet_result(pet, operation, uid, fwq, item_type=None):
+def _record_pet_result(
+        pet, operation, uid, fwq, item_type=None, database_path=None):
     """将一次洗宠或开蛋结果写入 SQLite 数据库。"""
-    database_path = _get_application_dir() / 'pet_results.db'
+    if database_path is None:
+        database_path = _get_application_dir() / 'pet_results.db'
+    else:
+        database_path = Path(database_path)
     with closing(sqlite3.connect(database_path, timeout=30)) as connection:
         with connection:
             connection.execute('''

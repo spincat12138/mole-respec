@@ -1,4 +1,7 @@
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 
 from pet_respec import (
     RespecRunner,
@@ -43,6 +46,7 @@ def make_pet(pet_id=7, growth=100, base=None, derived=None):
 class FakeBackend:
     def __init__(self, pets, quantity=5):
         self.pets = list(pets)
+        self.recorded_results = []
         self.quantities = {item_id: 0 for item_id in ITEM_IDS}
         self.quantities[ITEM_IDS[2]] = quantity
 
@@ -56,11 +60,17 @@ class FakeBackend:
         self.pets[0]["grow_value"] += 1
         quantities[ITEM_IDS[item_index]] -= 1
 
+    def record_wash_result(self, pet, item_index):
+        self.recorded_results.append((dict(pet), item_index))
+
 
 class FakeMoer:
+    _XD_ITEM_TYPES = ("绿色成长", "红色成长", "大丸子", "紫色五项", "红色五项")
+
     def __init__(self):
         self.requested_ids = []
         self.moves = []
+        self.recorded_results = []
 
     def _get_pet_store(self, _socket, _uid_bytes):
         return {"pets": [{"pet_id": 11}, {"pet_id": 12}]}
@@ -76,6 +86,19 @@ class FakeMoer:
 
     def _pet_back_bag(self, _socket, _uid_bytes, pet):
         self.moves.append(("bag", pet["pet_id"]))
+
+    def _record_pet_result(
+        self,
+        pet,
+        operation,
+        uid,
+        fwq,
+        item_type,
+        database_path,
+    ):
+        self.recorded_results.append(
+            (dict(pet), operation, uid, fwq, item_type, database_path)
+        )
 
 
 class TargetTests(unittest.TestCase):
@@ -140,6 +163,10 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result.attempts, 2)
         self.assertEqual(len(progress), 2)
         self.assertEqual(result.remaining_items, 3)
+        self.assertEqual(
+            [(pet["grow_value"], item_index) for pet, item_index in backend.recorded_results],
+            [(101, 2), (102, 2)],
+        )
 
     def test_runner_stops_before_using_missing_inventory(self):
         backend = FakeBackend([make_pet(growth=100)], quantity=1)
@@ -167,8 +194,11 @@ class ProtocolBackendTests(unittest.TestCase):
     def make_backend():
         backend = ProtocolBackend.__new__(ProtocolBackend)
         backend._moer = FakeMoer()
+        backend._result_database_path = ProtocolBackend._application_dir() / "pet_results.db"
         backend._game_socket = object()
         backend._uid_bytes = [0, 0, 0, 1]
+        backend.server = 6
+        backend.uid = 123456
         return backend
 
     def test_storage_list_does_not_fetch_details(self):
@@ -196,6 +226,48 @@ class ProtocolBackendTests(unittest.TestCase):
         backend.move_pet_to_bag(pet)
 
         self.assertEqual(backend._moer.moves, [("store", 12), ("bag", 12)])
+
+    def test_wash_result_records_account_server_item_and_database(self):
+        backend = self.make_backend()
+        pet = make_pet()
+
+        backend.record_wash_result(pet, 2)
+
+        self.assertEqual(len(backend._moer.recorded_results), 1)
+        recorded = backend._moer.recorded_results[0]
+        self.assertEqual(recorded[:5], (pet, "洗宠", 123456, 6, "大丸子"))
+        self.assertEqual(
+            recorded[5], ProtocolBackend._application_dir() / "pet_results.db"
+        )
+
+    def test_wash_result_is_persisted_to_sqlite(self):
+        backend = ProtocolBackend()
+        backend.uid = 123456
+        backend.server = 6
+        pet = make_pet(growth=197)
+        pet.update({"type_id": 1, "nick": "test-pet", "level": 99})
+
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "pet_results.db"
+            backend._result_database_path = database_path
+            backend.record_wash_result(pet, 2)
+
+            connection = sqlite3.connect(database_path)
+            try:
+                row = connection.execute(
+                    """
+                    SELECT operation, uid, fwq, item_type, pet_level,
+                           nickname, growth
+                    FROM pet_results
+                    """
+                ).fetchone()
+            finally:
+                connection.close()
+
+        self.assertEqual(
+            row,
+            ("洗宠", 123456, 6, "大丸子", 99, "test-pet", 197),
+        )
 
 
 class PetPredictionTests(unittest.TestCase):

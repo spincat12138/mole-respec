@@ -14,6 +14,7 @@ from typing import Mapping
 class ProtocolBackend:
     def __init__(self) -> None:
         self._moer = self._load_moer()
+        self._result_database_path = self._application_dir() / "pet_results.db"
         self._login_socket: socket.socket | None = None
         self._game_socket: socket.socket | None = None
         self._uid_bytes: list[int] | None = None
@@ -29,6 +30,18 @@ class ProtocolBackend:
         if ref_path not in sys.path:
             sys.path.insert(0, ref_path)
         return importlib.import_module("moer")
+
+    @staticmethod
+    def _application_dir() -> Path:
+        compiled = globals().get("__compiled__")
+        if compiled is not None:
+            containing_dir = getattr(compiled, "containing_dir", None)
+            if containing_dir:
+                return Path(containing_dir).resolve()
+            return Path(sys.argv[0]).resolve().parent
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parent
 
     @property
     def item_ids(self) -> tuple[int, ...]:
@@ -114,6 +127,22 @@ class ProtocolBackend:
     ) -> None:
         game_socket, uid_bytes = self._session()
         self._moer.eatwz(game_socket, uid_bytes, pet, item_index, quantities)
+
+    def record_wash_result(
+        self,
+        pet: Mapping[str, object],
+        item_index: int,
+    ) -> None:
+        if item_index not in range(len(self._moer._XD_ITEM_TYPES)):
+            raise ValueError("未知洗点道具")
+        self._moer._record_pet_result(
+            pet,
+            "洗宠",
+            self.uid,
+            self.server,
+            self._moer._XD_ITEM_TYPES[item_index],
+            database_path=self._result_database_path,
+        )
 
     def _session(self) -> tuple[socket.socket, list[int]]:
         if self._game_socket is None or self._uid_bytes is None:

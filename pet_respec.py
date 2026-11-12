@@ -99,6 +99,12 @@ class RespecBackend(Protocol):
         quantities: dict[int, int],
     ) -> None: ...
 
+    def record_wash_result(
+        self,
+        pet: Mapping[str, object],
+        item_index: int,
+    ) -> None: ...
+
 
 def target_fields(item_index: int, mode: str) -> tuple[TargetField, ...]:
     """Return the target schema used by moer.py's xd workflow."""
@@ -185,6 +191,7 @@ class RespecRunner:
             self._backend.wash_once(current, config.item_index, quantities)
             attempts += 1
             current = self._find_pet(self._backend.load_pets(), config.pet_id)
+            self._backend.record_wash_result(current, config.item_index)
             reached = is_target_reached(
                 current, config.item_index, config.mode, config.targets
             )
