@@ -13,6 +13,11 @@ from typing import Mapping
 from pet_respec import is_pet_washable
 
 
+GIANT_ROCK_FRAGMENT_ID = 290011
+EXPERIENCE_BOOK_ID = 350050
+MISC_ITEM_IDS = (GIANT_ROCK_FRAGMENT_ID, EXPERIENCE_BOOK_ID)
+
+
 class ProtocolBackend:
     def __init__(self) -> None:
         self._moer = self._load_moer()
@@ -48,6 +53,10 @@ class ProtocolBackend:
     @property
     def item_ids(self) -> tuple[int, ...]:
         return tuple(self._moer._XD_ITEM_IDS)
+
+    @property
+    def pet_egg_items(self) -> tuple[tuple[int, str], ...]:
+        return tuple(self._moer._get_pet_egg_items())
 
     def pet_type_name(self, type_id: int) -> str:
         return self._moer._get_pet_name(type_id)
@@ -117,9 +126,62 @@ class ProtocolBackend:
         game_socket, uid_bytes = self._session()
         self._moer._pet_back_bag(game_socket, uid_bytes, pet)
 
+    def release_pet(self, pet: Mapping[str, object]) -> None:
+        game_socket, uid_bytes = self._session()
+        self._moer._pet_release(game_socket, uid_bytes, pet)
+
     def load_item_quantities(self) -> dict[int, int]:
         game_socket, uid_bytes = self._session()
         return self._moer._get_xd_item_quantities(game_socket, uid_bytes)
+
+    def load_misc_item_quantities(self) -> dict[int, dict[str, int]]:
+        game_socket, uid_bytes = self._session()
+        bag_items, _ = self._moer._get_prop_bag_info(game_socket, uid_bytes)
+        store_items, _ = self._moer._get_prop_store_info(game_socket, uid_bytes)
+        quantities = {
+            item_id: {"bag": 0, "store": 0}
+            for item_id in MISC_ITEM_IDS
+        }
+        for location, items in (("bag", bag_items), ("store", store_items)):
+            for item in items:
+                item_id = int(item["item_id"])
+                if item_id in quantities:
+                    quantities[item_id][location] += int(item["quantity"])
+        return quantities
+
+    def exchange_big_pills(self, count: int) -> None:
+        self._validate_positive_count(count)
+        game_socket, uid_bytes = self._session()
+        self._moer.exchangelb(game_socket, uid_bytes, 3, count)
+
+    def use_experience_books(self, count: int) -> None:
+        self._validate_positive_count(count)
+        game_socket, uid_bytes = self._session()
+        self._moer.openbook(game_socket, uid_bytes, count)
+
+    def load_exp_tree_experience(self) -> int:
+        game_socket, uid_bytes = self._session()
+        return int(self._moer._get_exp_tree_experience(game_socket, uid_bytes))
+
+    def allocate_pet_experience(self, pet_id: int, experience: int) -> None:
+        self._validate_positive_count(experience)
+        game_socket, uid_bytes = self._session()
+        self._moer._allocate_pet_experience(
+            game_socket, uid_bytes, int(pet_id), experience
+        )
+
+    def upgrade_pet_to_zero_99(self, pet_id: int) -> None:
+        game_socket, uid_bytes = self._session()
+        self._moer._upgrade_pet_to_zero_99(game_socket, uid_bytes, int(pet_id))
+
+    def upgrade_pet_to_ten_99(self, pet_id: int) -> None:
+        game_socket, uid_bytes = self._session()
+        self._moer._upgrade_pet_to_ten_99(game_socket, uid_bytes, int(pet_id))
+
+    def open_pet_eggs(self, item_id: int, count: int) -> None:
+        self._validate_positive_count(count)
+        game_socket, uid_bytes = self._session()
+        self._moer._open_pet_eggs(game_socket, uid_bytes, int(item_id), count)
 
     def wash_once(
         self,
@@ -152,3 +214,8 @@ class ProtocolBackend:
         if self._game_socket is None or self._uid_bytes is None:
             raise RuntimeError("尚未连接游戏服务器")
         return self._game_socket, self._uid_bytes
+
+    @staticmethod
+    def _validate_positive_count(count: int) -> None:
+        if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+            raise ValueError("数量必须是正整数")

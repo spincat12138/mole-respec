@@ -41,6 +41,12 @@ _ROLE_RESET_ATTR_POINTS_ITEM_ID = 360007
 _PET_ALLOCATE_ATTR_POINTS_COMMAND = 1606
 _PET_RESET_ATTR_POINTS_COMMAND = 1565
 _PET_RESET_ATTR_POINTS_ITEM_ID = 360010
+_PET_RELEASE_COMMAND = 1561
+_EXP_TREE_COMMAND = 2000
+_PET_AUTO_ALLOCATE_ATTR_POINTS_COMMAND = 1603
+_MAX_EXP_PER_PACKET = 999999
+_ZERO_99_TARGET_EXP = 60796450
+_OPEN_PET_EGG_COMMAND = 1130
 _ATTR_NAMES = ('体力', '力量', '耐力', '敏捷', '智力')
 _ATTR_KEYS = ('physique', 'strength', 'endurance', 'quick', 'intelligence')
 # 洗五项使用面板展示的战斗派生值：生命、攻击、防御、速度、魔力。
@@ -49,6 +55,13 @@ _XD_LOWER_BOUND_INDICES = (0, 1, 3)
 _XD_BASE_VALUE_KEYS = ('physique', 'strength', 'endurance', 'quick', 'intelligence')
 _XD_ITEM_TYPES = ('绿色成长', '红色成长', '大丸子', '紫色五项', '红色五项')
 _XD_ITEM_IDS = (350013, 360008, 360038, 350014, 360009)
+_PET_EGG_ITEMS = tuple(
+    sorted(
+        (item_id, name)
+        for item_id, name in _ITEM_NAMES.items()
+        if name.endswith('精灵蛋')
+    )
+)
 _KD_VALUE_KEYS = ('grow_value', 'hp_max', 'attack', 'defense', 'speed', 'mp_max')
 _KD_LOWER_BOUND_INDICES = (0, 1, 2, 4)
 _PET_POSITION_NAMES = {
@@ -94,6 +107,10 @@ def _get_item_name(item_id):
 def _get_pet_name(type_id):
     """返回精灵类型名称；未知类型保留 ID 便于补充映射。"""
     return _PET_NAMES.get(type_id, '未知精灵_%d' % type_id)
+
+
+def _get_pet_egg_items():
+    return _PET_EGG_ITEMS
 
 
 def _get_application_dir():
@@ -1667,6 +1684,102 @@ def fpexp(exp, pet, uid, s):
     s.send(req)
 
 
+def _get_exp_tree_experience(s, str2):
+    """通过 2000 协议读取经验树剩余经验。"""
+    response = _send_tmf_request(
+        s, str2, _EXP_TREE_COMMAND, bytes(str2))
+    payload = _parse_tmf_response_payload(response, _EXP_TREE_COMMAND)
+    if len(payload) < 8:
+        raise ValueError('2000协议回包缺少经验树经验字段')
+    return struct.unpack_from('>I', payload, len(payload) - 8)[0]
+
+
+def _get_bag_pet_by_id(s, str2, pet_id):
+    if not isinstance(pet_id, int) or isinstance(pet_id, bool):
+        raise ValueError('宠物ID必须是uint32正整数')
+    if pet_id <= 0 or pet_id > 0xFFFFFFFF:
+        raise ValueError('宠物ID必须是uint32正整数')
+    pets = _get_pet_bag(s, str2)['pets']
+    for pet in pets:
+        if pet['pet_id'] == pet_id:
+            return pet
+    raise ValueError('所选宠物不在宠物背包中')
+
+
+def _send_pet_experience(s, str2, pet_id_bytes, experience):
+    remaining = experience
+    packet_count = 0
+    while remaining > 0:
+        packet_exp = min(remaining, _MAX_EXP_PER_PACKET)
+        fpexp(packet_exp, pet_id_bytes, str2, s)
+        remaining -= packet_exp
+        packet_count += 1
+        if packet_count % 10 == 0 and remaining > 0:
+            time.sleep(0.25)
+
+
+def _auto_allocate_pet_attr_points(s, str2, pet_id_bytes):
+    packet = _build_tmf_request(
+        str2, _PET_AUTO_ALLOCATE_ATTR_POINTS_COMMAND, pet_id_bytes)
+    s.send(packet)
+
+
+def _require_exp_tree_experience(s, str2, required):
+    available = _get_exp_tree_experience(s, str2)
+    if required > available:
+        raise ValueError(
+            '经验树经验不足：需要%d，当前剩余%d' % (required, available))
+    return available
+
+
+def _allocate_pet_experience(s, str2, pet_id, experience):
+    if not isinstance(experience, int) or isinstance(experience, bool):
+        raise ValueError('分配经验必须是正整数')
+    if experience <= 0 or experience > 0xFFFFFFFF:
+        raise ValueError('分配经验必须在1到4294967295之间')
+    pet = _get_bag_pet_by_id(s, str2, pet_id)
+    _require_exp_tree_experience(s, str2, experience)
+    _send_pet_experience(s, str2, pet['pet_id_bytes'], experience)
+    _auto_allocate_pet_attr_points(s, str2, pet['pet_id_bytes'])
+
+
+def _upgrade_pet_to_zero_99(s, str2, pet_id):
+    pet = _get_bag_pet_by_id(s, str2, pet_id)
+    if pet['reincarnation_degree'] != 0:
+        raise ValueError('一键升级0转99级仅适用于0转宠物')
+    required = max(0, _ZERO_99_TARGET_EXP - pet['experience'])
+    if required == 0 or pet['level'] >= 99:
+        raise ValueError('所选宠物已达到0转99级')
+    _require_exp_tree_experience(s, str2, required)
+    _send_pet_experience(s, str2, pet['pet_id_bytes'], required)
+    _auto_allocate_pet_attr_points(s, str2, pet['pet_id_bytes'])
+
+
+def _upgrade_pet_to_ten_99(s, str2, pet_id):
+    pet = _get_bag_pet_by_id(s, str2, pet_id)
+    rebirth = pet['reincarnation_degree']
+    if rebirth > 10:
+        raise ValueError('宠物转生次数超过10，无法执行一键升级')
+
+    stage_experience = []
+    current_required = max(0, jsexp(rebirth, 0) - pet['experience'])
+    stage_experience.append((rebirth, current_required))
+    stage_experience.extend(
+        (stage, jsexp(stage, 0))
+        for stage in range(rebirth + 1, 11)
+    )
+    required = sum(experience for _stage, experience in stage_experience)
+    if required == 0 or (rebirth == 10 and pet['level'] >= 99):
+        raise ValueError('所选宠物已达到10转99级')
+    _require_exp_tree_experience(s, str2, required)
+
+    for stage, experience in stage_experience:
+        _send_pet_experience(s, str2, pet['pet_id_bytes'], experience)
+        if stage < 10:
+            zs(pet['pet_id_bytes'], str2, s)
+    _auto_allocate_pet_attr_points(s, str2, pet['pet_id_bytes'])
+
+
 def zs(pet, uid, s):
     pet_id = pet['pet_id_bytes'] if isinstance(pet, dict) else pet[0:4]
     packet = [0, 0, 0, 22, 15, 163, *uid, 0, 0, 5, 187, 0, 0, 0, 0, *pet_id]
@@ -1746,9 +1859,7 @@ def fscw(s, str2):
     count = 0
     for pet in pets:
         if pet['level'] == dj and pet['nick'] == name:
-            packet = [0, 0, 0, 22, 6, 25, *str2, 0, 0, 8, 34,
-                      0, 0, 0, 0, *pet['pet_id_bytes']]
-            s.send(struct.pack('22B', *packet))
+            _pet_release(s, str2, pet)
             count += 1
     print('放生成功，共放生%d只宠物' % count)
 
@@ -2696,13 +2807,16 @@ def openjmbox(s, str2, id=300100):
                  target_quantity, remaining_boxes))
 
 
-def openbook(s, str2):    
+def openbook(s, str2, count=None):
     packet = [0, 0, 0, 26, 4, 105, *str2, 0, 0, 5, 149, 0, 0, 0, 0, 0, 5, 87, 98, 0, 0, 0, 1]
     t1 = tuple(packet)
     req = struct.pack('26B', *t1)
-    num = int(input('请输入开启数量'))
-    _fetch_item_from_store(s, str2, 350050, num)
-    for i in range(num):
+    if count is None:
+        count = int(input('请输入开启数量'))
+    if count <= 0:
+        raise ValueError('使用数量必须大于0')
+    _fetch_item_from_store(s, str2, 350050, count)
+    for i in range(count):
         s.send(req)
         if i % 100 == 0:
             time.sleep(0.5)
@@ -3302,6 +3416,45 @@ def _fetch_item_from_store(s, str2, item_id, quantity):
     s.send(req)
 
 
+def _open_pet_eggs(s, str2, item_id, quantity):
+    egg_ids = {egg_id for egg_id, _name in _PET_EGG_ITEMS}
+    if item_id not in egg_ids:
+        raise ValueError('所选物品不是已知的精灵蛋')
+    if not isinstance(quantity, int) or isinstance(quantity, bool):
+        raise ValueError('开蛋数量必须是正整数')
+    if quantity <= 0 or quantity > 0xFFFFFFFF:
+        raise ValueError('开蛋数量必须在1到4294967295之间')
+
+    bag_items, _ = _get_prop_bag_info(s, str2)
+    store_items, _ = _get_prop_store_info(s, str2)
+    bag_quantity = sum(
+        item['quantity'] for item in bag_items
+        if item['item_id'] == item_id
+    )
+    store_quantity = sum(
+        item['quantity'] for item in store_items
+        if item['item_id'] == item_id
+    )
+    available = bag_quantity + store_quantity
+    if quantity > available:
+        raise ValueError(
+            '%s数量不足：需要%d，背包%d，仓库%d，合计%d' %
+            (_get_item_name(item_id), quantity, bag_quantity,
+             store_quantity, available))
+
+    store_fetch_quantity = max(0, quantity - bag_quantity)
+    if store_fetch_quantity > 0:
+        _fetch_item_from_store(
+            s, str2, item_id, store_fetch_quantity)
+    packet = _build_tmf_request(
+        str2, _OPEN_PET_EGG_COMMAND, item_id.to_bytes(4, byteorder='big'))
+    for index in range(quantity):
+        s.send(packet)
+        if (index + 1) % 6 == 0 and index + 1 < quantity:
+            time.sleep(1)
+    time.sleep(1)
+
+
 def _get_kd_continue_action(petid):
     return _get_continue_action(
         '[按回车使用相同设置继续开%s，输入886换服继续，按0退出]' %
@@ -3486,6 +3639,29 @@ def _pet_back_store(s, str2, pet):
 def _pet_back_bag(s, str2, pet):
     """将宠物从仓库取回背包（1551 状态 1）。"""
     _change_pet_status(s, str2, pet, 1)
+
+
+def _pet_release(s, str2, pet):
+    """通过 1561（PET_RELEASE）放生仓库中的宠物。"""
+    if isinstance(pet, dict):
+        pet_id = pet.get('pet_id_bytes', pet.get('pet_id'))
+    else:
+        pet_id = pet
+
+    if isinstance(pet_id, int) and not isinstance(pet_id, bool):
+        if pet_id <= 0 or pet_id > 0xFFFFFFFF:
+            raise ValueError('宠物ID必须是有效的uint32正整数')
+        pet_id_bytes = pet_id.to_bytes(4, byteorder='big')
+    else:
+        try:
+            pet_id_bytes = bytes(pet_id[0:4])
+        except (TypeError, ValueError) as exc:
+            raise ValueError('宠物ID必须是uint32或4字节序列') from exc
+        if len(pet_id_bytes) != 4 or int.from_bytes(
+                pet_id_bytes, byteorder='big') == 0:
+            raise ValueError('宠物ID必须是非零的4字节序列')
+
+    s.send(_build_tmf_request(str2, _PET_RELEASE_COMMAND, pet_id_bytes))
 
 
 def _pet_back_home(s, str2, pet):
@@ -4997,24 +5173,13 @@ def fpexp099(s, str2):
             break
         print('宠物编号不存在')
 
-    remaining_exp = 60796450
-    max_packet_exp = 999999
     selected_pet = pets[pet_number - 1]
-    pet_id = selected_pet['pet_id_bytes']
-    packet_count = 0
-    while remaining_exp > 0:
-        packet_exp = min(remaining_exp, max_packet_exp)
-        fpexp(packet_exp, pet_id, str2, s)
-        remaining_exp -= packet_exp
-        packet_count += 1
-        if packet_count % 10 == 0 and remaining_exp > 0:
-            time.sleep(0.25)
-    print('已向宠物%s分配60796449经验' % selected_pet['nick'])
-
-    # 自动分配点数
-    packet = [0, 0, 0, 0x16, 0x06, 0x43, *str2, 0, 0, 5,
-                         random.randint(0, 255), 0, 0, 0, 0, *pet_id]
-    s.send(struct.pack('22B', *packet))
+    try:
+        _upgrade_pet_to_zero_99(s, str2, selected_pet['pet_id'])
+    except ValueError as exc:
+        print('一键升级失败：%s' % exc)
+        return
+    print('已将宠物%s升级到0转99级并自动分配点数' % selected_pet['nick'])
 
 if __name__ == '__main__':
     login_interface('account.txt')

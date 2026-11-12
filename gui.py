@@ -30,7 +30,12 @@ from pet_prediction import (
     scenario,
     simulate_base,
 )
-from protocol_backend import ProtocolBackend
+from protocol_backend import (
+    EXPERIENCE_BOOK_ID,
+    GIANT_ROCK_FRAGMENT_ID,
+    ProtocolBackend,
+)
+from skill_names import load_skill_names
 
 
 COLORS = {
@@ -110,6 +115,30 @@ def automatic_target_groups(
     return tuple(groups)
 
 
+def pet_skill_rows(
+    pet: Mapping[str, object],
+    skill_names: Mapping[int, str] | None = None,
+) -> tuple[tuple[str, str], ...]:
+    raw_skills = pet.get("skills", ())
+    if not isinstance(raw_skills, (list, tuple)):
+        raise TypeError("宠物技能数据格式无效")
+
+    rows = []
+    for raw_skill in raw_skills:
+        if not isinstance(raw_skill, Mapping):
+            raise TypeError("宠物技能数据格式无效")
+        skill_id = int(raw_skill["skill_id"])
+        level = int(raw_skill["level"])
+        name = skill_names.get(skill_id) if skill_names is not None else None
+        rows.append(
+            (
+                name or f"ID {skill_id}",
+                f"等级 {level}",
+            )
+        )
+    return tuple(rows)
+
+
 @dataclass(frozen=True)
 class PredictionCacheEntry:
     point_values: tuple[str, ...]
@@ -132,6 +161,8 @@ class PetRespecApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.backend = ProtocolBackend()
+        self.skill_names = load_skill_names()
+        self.pet_egg_items = self.backend.pet_egg_items
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
@@ -145,6 +176,8 @@ class PetRespecApp:
         self.remembered_pet_selection: tuple[int, int] | None = None
         self.storage_request_id = 0
         self.item_quantities: dict[int, int] = {}
+        self.misc_item_quantities: dict[int, dict[str, int]] = {}
+        self.exp_tree_experience: int | None = None
         self.target_group_entries: list[list[tk.StringVar]] = []
         self.target_group_enabled_vars: list[tk.BooleanVar] = []
         self.target_group_entry_widgets: list[list[ttk.Entry]] = []
@@ -499,10 +532,12 @@ class PetRespecApp:
         operation_tab = ttk.Frame(notebook, style="Surface.TFrame", padding=(2, 10))
         prediction_tab = ttk.Frame(notebook, style="Surface.TFrame", padding=(2, 10))
         simulator_tab = ttk.Frame(notebook, style="Surface.TFrame", padding=(2, 10))
+        misc_tab = ttk.Frame(notebook, style="Surface.TFrame", padding=(2, 10))
         result_tab = ttk.Frame(notebook, style="Surface.TFrame", padding=(2, 10))
         notebook.add(operation_tab, text="洗点设置")
         notebook.add(prediction_tab, text="成长预测")
         notebook.add(simulator_tab, text="基数与洗宠模拟")
+        notebook.add(misc_tab, text="杂项")
         notebook.add(result_tab, text="洗点结果")
         self.notebook = notebook
         self.prediction_tab = prediction_tab
@@ -510,8 +545,150 @@ class PetRespecApp:
         self._build_operation_tab(operation_tab)
         self._build_prediction_tab(prediction_tab)
         self._build_simulator_tab(simulator_tab)
+        self._build_misc_tab(misc_tab)
         self._build_result_tab(result_tab)
         notebook.bind("<<NotebookTabChanged>>", self._on_workspace_tab_changed)
+
+    def _build_misc_tab(self, parent: ttk.Frame) -> None:
+        ttk.Label(parent, text="杂项操作", style="Section.TLabel").pack(anchor="w")
+
+        fragment_row = ttk.Frame(parent, style="Alt.TFrame", padding=(14, 12))
+        fragment_row.pack(fill="x", pady=(12, 8))
+        fragment_row.columnconfigure(0, weight=1)
+        ttk.Label(fragment_row, text="巨石碎片", style="AltBody.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.fragment_quantity_var = tk.StringVar(value="背包 - | 仓库 - | 合计 -")
+        ttk.Label(
+            fragment_row,
+            textvariable=self.fragment_quantity_var,
+            style="MetricLabel.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.big_pill_count_var = tk.StringVar(value="1")
+        self.big_pill_count_entry = ttk.Entry(
+            fragment_row, textvariable=self.big_pill_count_var, width=9
+        )
+        self.big_pill_count_entry.grid(row=0, column=1, rowspan=2, padx=(12, 8))
+        self.exchange_big_pill_button = ttk.Button(
+            fragment_row,
+            text="兑换大丸子",
+            style="Accent.TButton",
+            command=self._exchange_big_pills,
+        )
+        self.exchange_big_pill_button.grid(row=0, column=2, rowspan=2)
+        self.big_pill_count_entry.bind(
+            "<Return>", lambda _event: self._exchange_big_pills()
+        )
+
+        book_row = ttk.Frame(parent, style="Alt.TFrame", padding=(14, 12))
+        book_row.pack(fill="x")
+        book_row.columnconfigure(0, weight=1)
+        ttk.Label(book_row, text="经验书", style="AltBody.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.book_quantity_var = tk.StringVar(value="背包 - | 仓库 - | 合计 -")
+        ttk.Label(
+            book_row,
+            textvariable=self.book_quantity_var,
+            style="MetricLabel.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.book_count_var = tk.StringVar(value="1")
+        self.book_count_entry = ttk.Entry(
+            book_row, textvariable=self.book_count_var, width=9
+        )
+        self.book_count_entry.grid(row=0, column=1, rowspan=2, padx=(12, 8))
+        self.use_book_button = ttk.Button(
+            book_row,
+            text="使用经验书",
+            style="Accent.TButton",
+            command=self._use_experience_books,
+        )
+        self.use_book_button.grid(row=0, column=2, rowspan=2)
+        self.book_count_entry.bind(
+            "<Return>", lambda _event: self._use_experience_books()
+        )
+
+        experience_row = ttk.Frame(parent, style="Alt.TFrame", padding=(14, 12))
+        experience_row.pack(fill="x", pady=(8, 0))
+        experience_row.columnconfigure(0, weight=1)
+        ttk.Label(experience_row, text="经验树经验", style="AltBody.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.exp_tree_quantity_var = tk.StringVar(value="剩余经验 -")
+        ttk.Label(
+            experience_row,
+            textvariable=self.exp_tree_quantity_var,
+            style="MetricLabel.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+        self.pet_experience_var = tk.StringVar(value="1")
+        self.pet_experience_entry = ttk.Entry(
+            experience_row, textvariable=self.pet_experience_var, width=11
+        )
+        self.pet_experience_entry.grid(row=0, column=1, rowspan=2, padx=(12, 8))
+        self.allocate_experience_button = ttk.Button(
+            experience_row,
+            text="分配经验",
+            style="Accent.TButton",
+            command=self._allocate_pet_experience,
+        )
+        self.allocate_experience_button.grid(row=0, column=2, rowspan=2)
+        self.upgrade_zero_99_button = ttk.Button(
+            experience_row,
+            text="一键升级099",
+            style="Tool.TButton",
+            command=lambda: self._upgrade_selected_pet("zero_99"),
+        )
+        self.upgrade_zero_99_button.grid(
+            row=0, column=3, rowspan=2, padx=(8, 0)
+        )
+        self.upgrade_ten_99_button = ttk.Button(
+            experience_row,
+            text="一键升级1099",
+            style="Tool.TButton",
+            command=lambda: self._upgrade_selected_pet("ten_99"),
+        )
+        self.upgrade_ten_99_button.grid(
+            row=0, column=4, rowspan=2, padx=(8, 0)
+        )
+        self.pet_experience_entry.bind(
+            "<Return>", lambda _event: self._allocate_pet_experience()
+        )
+
+        egg_row = ttk.Frame(parent, style="Alt.TFrame", padding=(14, 12))
+        egg_row.pack(fill="x", pady=(8, 0))
+        egg_row.columnconfigure(0, weight=1)
+        ttk.Label(egg_row, text="开启精灵蛋", style="AltBody.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        egg_values = tuple(
+            f"{name}（{item_id}）" for item_id, name in self.pet_egg_items
+        )
+        self.pet_egg_combo = ttk.Combobox(
+            egg_row,
+            values=egg_values,
+            state="readonly",
+            width=28,
+        )
+        self.pet_egg_combo.grid(row=1, column=0, sticky="w", pady=(4, 0))
+        if egg_values:
+            self.pet_egg_combo.current(0)
+        self.pet_egg_count_var = tk.StringVar(value="1")
+        self.pet_egg_count_entry = ttk.Entry(
+            egg_row, textvariable=self.pet_egg_count_var, width=9
+        )
+        self.pet_egg_count_entry.grid(
+            row=0, column=1, rowspan=2, padx=(12, 8)
+        )
+        self.open_pet_eggs_button = ttk.Button(
+            egg_row,
+            text="开启精灵蛋",
+            style="Accent.TButton",
+            command=self._open_pet_eggs,
+        )
+        self.open_pet_eggs_button.grid(row=0, column=2, rowspan=2)
+        self.pet_egg_count_entry.bind(
+            "<Return>", lambda _event: self._open_pet_eggs()
+        )
 
     def _build_prediction_tab(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="等级与转生预测", style="Section.TLabel").pack(
@@ -1022,9 +1199,21 @@ class PetRespecApp:
             command=lambda: self._move_selected_pet("to_bag"),
         )
         self.to_bag_button.pack(side="left", padx=(8, 0))
+        self.release_pet_button = ttk.Button(
+            detail_actions,
+            text="放生宠物",
+            style="Tool.TButton",
+            command=self._release_selected_pet,
+        )
+        self.release_pet_button.pack(side="left", padx=(8, 0))
 
-        self.metrics_frame = ttk.Frame(parent, style="Surface.TFrame")
-        self.metrics_frame.pack(fill="x")
+        pet_overview = ttk.Frame(parent, style="Surface.TFrame")
+        pet_overview.pack(fill="x")
+        pet_overview.columnconfigure(0, weight=1, uniform="pet_overview")
+        pet_overview.columnconfigure(1, weight=1, uniform="pet_overview")
+
+        self.metrics_frame = ttk.Frame(pet_overview, style="Surface.TFrame")
+        self.metrics_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         self.metric_values: dict[str, tk.StringVar] = {}
         metric_defs = (
             ("grow_value", "成长", 0, 0, 5),
@@ -1057,6 +1246,27 @@ class PetRespecApp:
             ttk.Label(box, textvariable=value_var, style="MetricValue.TLabel").pack(
                 anchor="w"
             )
+
+        self.skills_panel = ttk.Frame(pet_overview, style="Surface.TFrame")
+        self.skills_panel.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self.skills_panel.columnconfigure(0, weight=1)
+        self.skills_panel.rowconfigure(1, weight=1)
+        skills_header = ttk.Frame(
+            self.skills_panel, style="Alt.TFrame", padding=(10, 7)
+        )
+        skills_header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(skills_header, text="技能", style="MetricLabel.TLabel").pack(
+            side="left"
+        )
+        self.skill_count_var = tk.StringVar(value="-")
+        ttk.Label(
+            skills_header,
+            textvariable=self.skill_count_var,
+            style="MetricValue.TLabel",
+        ).pack(side="right")
+        self.skills_content = ttk.Frame(self.skills_panel, style="Surface.TFrame")
+        self.skills_content.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
+        self._render_pet_skills(None)
 
         ttk.Separator(parent).pack(fill="x", pady=14)
 
@@ -1205,8 +1415,20 @@ class PetRespecApp:
                 bag_pets = self.backend.load_pets()
                 storage_pets = self.backend.load_storage_pets()
                 quantities = self.backend.load_item_quantities()
+                misc_quantities = self.backend.load_misc_item_quantities()
+                exp_tree_experience = self.backend.load_exp_tree_experience()
                 self.events.put(
-                    ("connected", (actual_server, bag_pets, storage_pets, quantities))
+                    (
+                        "connected",
+                        (
+                            actual_server,
+                            bag_pets,
+                            storage_pets,
+                            quantities,
+                            misc_quantities,
+                            exp_tree_experience,
+                        ),
+                    )
                 )
             except Exception as exc:
                 self.backend.close()
@@ -1222,6 +1444,8 @@ class PetRespecApp:
         self.bag_pets = []
         self.storage_pets = []
         self.item_quantities = {}
+        self.misc_item_quantities = {}
+        self.exp_tree_experience = None
         self._render_pet_list()
         self._render_storage_list()
         self._show_pet(None)
@@ -1230,6 +1454,8 @@ class PetRespecApp:
         )
         self.status_var.set("已断开服务器")
         self._update_item_options()
+        self._render_misc_quantities()
+        self._render_exp_tree_experience()
         self._sync_controls()
 
     def _refresh(self) -> None:
@@ -1242,11 +1468,216 @@ class PetRespecApp:
                 bag_pets = self.backend.load_pets()
                 storage_pets = self.backend.load_storage_pets()
                 quantities = self.backend.load_item_quantities()
-                self.events.put(("refreshed", (bag_pets, storage_pets, quantities)))
+                misc_quantities = self.backend.load_misc_item_quantities()
+                exp_tree_experience = self.backend.load_exp_tree_experience()
+                self.events.put(
+                    (
+                        "refreshed",
+                        (
+                            bag_pets,
+                            storage_pets,
+                            quantities,
+                            misc_quantities,
+                            exp_tree_experience,
+                        ),
+                    )
+                )
             except Exception as exc:
                 self.events.put(("error", ("refresh", exc)))
 
         self._run_worker(work)
+
+    def _exchange_big_pills(self) -> None:
+        try:
+            count = self._read_misc_count(self.big_pill_count_var, "兑换数量")
+            available = self._misc_total(GIANT_ROCK_FRAGMENT_ID)
+            required = count * 2
+            if required > available:
+                raise ValueError(
+                    f"巨石碎片不足：兑换 {count} 个大丸子需要 {required} 个，当前共 {available} 个"
+                )
+        except ValueError as exc:
+            messagebox.showerror("输入有误", str(exc), parent=self.root)
+            return
+        self._run_misc_action(
+            "exchange_big_pills",
+            f"正在兑换 {count} 个大丸子",
+            lambda: self.backend.exchange_big_pills(count),
+            f"已兑换 {count} 个大丸子",
+        )
+
+    def _use_experience_books(self) -> None:
+        try:
+            count = self._read_misc_count(self.book_count_var, "使用数量")
+            available = self._misc_total(EXPERIENCE_BOOK_ID)
+            if count > available:
+                raise ValueError(
+                    f"经验书不足：准备使用 {count} 本，当前共 {available} 本"
+                )
+        except ValueError as exc:
+            messagebox.showerror("输入有误", str(exc), parent=self.root)
+            return
+        self._run_misc_action(
+            "use_experience_books",
+            f"正在使用 {count} 本经验书",
+            lambda: self.backend.use_experience_books(count),
+            f"已使用 {count} 本经验书",
+        )
+
+    def _allocate_pet_experience(self) -> None:
+        if self.selected_pet is None:
+            return
+        try:
+            experience = self._read_misc_count(
+                self.pet_experience_var, "分配经验"
+            )
+        except ValueError as exc:
+            messagebox.showerror("输入有误", str(exc), parent=self.root)
+            return
+        pet_id = int(self.selected_pet["pet_id"])
+        pet_name = str(self.selected_pet["nick"])
+        self._run_exp_action(
+            "allocate_pet_experience",
+            f"正在向 {pet_name} 分配 {experience} 经验",
+            lambda: self.backend.allocate_pet_experience(pet_id, experience),
+            f"已向 {pet_name} 分配 {experience} 经验并自动加点",
+            pet_id,
+        )
+
+    def _upgrade_selected_pet(self, target: str) -> None:
+        if self.selected_pet is None:
+            return
+        pet_id = int(self.selected_pet["pet_id"])
+        pet_name = str(self.selected_pet["nick"])
+        if target == "zero_99":
+            operation = lambda: self.backend.upgrade_pet_to_zero_99(pet_id)
+            target_text = "0转99级"
+            action = "upgrade_pet_zero_99"
+        elif target == "ten_99":
+            operation = lambda: self.backend.upgrade_pet_to_ten_99(pet_id)
+            target_text = "10转99级"
+            action = "upgrade_pet_ten_99"
+        else:
+            raise ValueError(f"未知升级目标：{target}")
+        self._run_exp_action(
+            action,
+            f"正在将 {pet_name} 升级到{target_text}",
+            operation,
+            f"已将 {pet_name} 升级到{target_text}并自动加点",
+            pet_id,
+        )
+
+    def _run_exp_action(
+        self,
+        action: str,
+        pending_text: str,
+        operation: Any,
+        completed_text: str,
+        pet_id: int,
+    ) -> None:
+        if not self.connected or self.busy_action:
+            return
+        self._set_busy(action, pending_text)
+
+        def work() -> None:
+            try:
+                operation()
+                bag_pets = self.backend.load_pets()
+                exp_tree_experience = self.backend.load_exp_tree_experience()
+                self.events.put(
+                    (
+                        "exp_completed",
+                        (
+                            completed_text,
+                            pet_id,
+                            bag_pets,
+                            exp_tree_experience,
+                        ),
+                    )
+                )
+            except Exception as exc:
+                self.events.put(("error", (action, exc)))
+
+        self._run_worker(work)
+
+    def _open_pet_eggs(self) -> None:
+        egg_index = self.pet_egg_combo.current()
+        if egg_index not in range(len(self.pet_egg_items)):
+            messagebox.showerror("输入有误", "请选择精灵蛋", parent=self.root)
+            return
+        try:
+            count = self._read_misc_count(self.pet_egg_count_var, "开蛋数量")
+        except ValueError as exc:
+            messagebox.showerror("输入有误", str(exc), parent=self.root)
+            return
+        item_id, name = self.pet_egg_items[egg_index]
+        if not self.connected or self.busy_action:
+            return
+        self._set_busy("open_pet_eggs", f"正在开启 {count} 个{name}")
+
+        def work() -> None:
+            try:
+                self.backend.open_pet_eggs(item_id, count)
+                bag_pets = self.backend.load_pets()
+                exp_tree_experience = self.backend.load_exp_tree_experience()
+                self.events.put(
+                    (
+                        "pet_eggs_opened",
+                        (
+                            f"已开启 {count} 个{name}",
+                            bag_pets,
+                            exp_tree_experience,
+                        ),
+                    )
+                )
+            except Exception as exc:
+                self.events.put(("error", ("open_pet_eggs", exc)))
+
+        self._run_worker(work)
+
+    def _run_misc_action(
+        self,
+        action: str,
+        pending_text: str,
+        operation: Any,
+        completed_text: str,
+    ) -> None:
+        if not self.connected or self.busy_action:
+            return
+        self._set_busy(action, pending_text)
+
+        def work() -> None:
+            try:
+                operation()
+                quantities = self.backend.load_item_quantities()
+                misc_quantities = self.backend.load_misc_item_quantities()
+                exp_tree_experience = self.backend.load_exp_tree_experience()
+                self.events.put(
+                    (
+                        "misc_completed",
+                        (
+                            completed_text,
+                            quantities,
+                            misc_quantities,
+                            exp_tree_experience,
+                        ),
+                    )
+                )
+            except Exception as exc:
+                self.events.put(("error", (action, exc)))
+
+        self._run_worker(work)
+
+    @staticmethod
+    def _read_misc_count(variable: tk.StringVar, label: str) -> int:
+        raw = variable.get().strip()
+        try:
+            count = int(raw)
+        except ValueError as exc:
+            raise ValueError(f"{label}必须是正整数") from exc
+        if count <= 0 or str(count) != raw:
+            raise ValueError(f"{label}必须是正整数")
+        return count
 
     def _move_selected_pet(self, direction: str) -> None:
         if not self.connected or self.busy_action:
@@ -1282,6 +1713,47 @@ class PetRespecApp:
 
         self._run_worker(work)
 
+    def _release_selected_pet(self) -> None:
+        if not self.connected or self.busy_action:
+            return
+        selection = self.storage_tree.selection()
+        pet = self.storage_pet_by_row.get(selection[0]) if selection else None
+        if pet is None:
+            return
+
+        pet_name = str(pet["nick"])
+        pet_level = int(pet["level"])
+        pet_id = int(pet["pet_id"])
+        confirmed = messagebox.askyesno(
+            "确认放生宠物",
+            f"确定要放生仓库宠物“{pet_name}”吗？\n\n"
+            f"等级：{pet_level}\nID：{pet_id}\n\n"
+            "放生后无法恢复。",
+            icon="warning",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+
+        self._set_busy("release_pet", f"正在放生 {pet_name}")
+
+        def work() -> None:
+            try:
+                self.backend.release_pet(pet)
+                bag_pets = self.backend.load_pets()
+                storage_pets = self.backend.load_storage_pets()
+                quantities = self.backend.load_item_quantities()
+                self.events.put(
+                    (
+                        "pet_released",
+                        (pet_name, bag_pets, storage_pets, quantities),
+                    )
+                )
+            except Exception as exc:
+                self.events.put(("error", ("release_pet", exc)))
+
+        self._run_worker(work)
+
     def _select_pet(self, _event: tk.Event[Any] | None = None) -> None:
         selection = self.pet_tree.selection()
         pet = self.pet_by_row.get(selection[0]) if selection else None
@@ -1312,6 +1784,7 @@ class PetRespecApp:
         )
         for value in self.metric_values.values():
             value.set("-")
+        self._render_pet_skills(None, "正在读取技能")
         self._render_prediction(None)
         self._clear_simulator_species("正在读取仓库宠物种类与详细属性")
         self.status_var.set("正在读取仓库宠物详细属性")
@@ -1336,6 +1809,7 @@ class PetRespecApp:
             self.pet_meta_var.set("连接服务器后，从左侧宠物列表中选择")
             for value in self.metric_values.values():
                 value.set("-")
+            self._render_pet_skills(None)
             self._render_prediction(None)
             self._clear_simulator_species()
             return
@@ -1348,6 +1822,7 @@ class PetRespecApp:
         )
         for key, value in self.metric_values.items():
             value.set(str(pet[key]))
+        self._render_pet_skills(pet)
         self._render_prediction(pet)
         self._load_simulator_species(pet)
 
@@ -1360,8 +1835,53 @@ class PetRespecApp:
         )
         for key, value in self.metric_values.items():
             value.set(str(pet[key]))
+        self._render_pet_skills(pet)
         self._render_prediction(pet)
         self._load_simulator_species(pet)
+
+    def _render_pet_skills(
+        self,
+        pet: Mapping[str, object] | None,
+        empty_text: str = "选择宠物后显示技能",
+    ) -> None:
+        for child in self.skills_content.winfo_children():
+            child.destroy()
+
+        rows = pet_skill_rows(pet, self.skill_names) if pet is not None else ()
+        self.skill_count_var.set(f"{len(rows)} 个" if pet is not None else "-")
+        for column in range(2):
+            self.skills_content.columnconfigure(
+                column, weight=1, uniform="pet_skill"
+            )
+
+        if not rows:
+            message = "暂无技能" if pet is not None else empty_text
+            placeholder = ttk.Frame(
+                self.skills_content, style="Alt.TFrame", padding=(10, 7)
+            )
+            placeholder.grid(row=0, column=0, columnspan=2, sticky="nsew")
+            self.skills_content.rowconfigure(0, weight=1)
+            ttk.Label(
+                placeholder, text=message, style="MetricLabel.TLabel"
+            ).pack(anchor="center", expand=True)
+            return
+
+        for index, (label, value) in enumerate(rows):
+            row, column = divmod(index, 2)
+            box = ttk.Frame(
+                self.skills_content, style="Alt.TFrame", padding=(10, 5)
+            )
+            box.grid(
+                row=row,
+                column=column,
+                sticky="nsew",
+                padx=(0 if column == 0 else 4, 0),
+                pady=(0 if row == 0 else 4, 0),
+            )
+            ttk.Label(box, text=label, style="MetricLabel.TLabel").pack(side="left")
+            ttk.Label(box, text=value, style="PredictionValue.TLabel").pack(
+                side="right"
+            )
 
     def _prediction_cache_key(
         self, pet: Mapping[str, object]
@@ -1746,6 +2266,29 @@ class PetRespecApp:
             self.item_combo.current(min(selected, len(values) - 1))
         self._render_targets()
 
+    def _misc_total(self, item_id: int) -> int:
+        quantity = self.misc_item_quantities.get(item_id, {})
+        return int(quantity.get("bag", 0)) + int(quantity.get("store", 0))
+
+    def _render_misc_quantities(self) -> None:
+        for item_id, variable in (
+            (GIANT_ROCK_FRAGMENT_ID, self.fragment_quantity_var),
+            (EXPERIENCE_BOOK_ID, self.book_quantity_var),
+        ):
+            if not self.connected:
+                variable.set("背包 - | 仓库 - | 合计 -")
+                continue
+            quantity = self.misc_item_quantities.get(item_id, {})
+            bag = int(quantity.get("bag", 0))
+            store = int(quantity.get("store", 0))
+            variable.set(f"背包 {bag} | 仓库 {store} | 合计 {bag + store}")
+
+    def _render_exp_tree_experience(self) -> None:
+        if not self.connected or self.exp_tree_experience is None:
+            self.exp_tree_quantity_var.set("剩余经验 -")
+            return
+        self.exp_tree_quantity_var.set(f"剩余经验 {self.exp_tree_experience}")
+
     def _render_targets(self) -> None:
         previous_rule = self.rendered_target_rule
         previous_values = [
@@ -1972,6 +2515,11 @@ class PetRespecApp:
             if idle and self.connected and bool(self.storage_tree.selection())
             else "disabled"
         )
+        self.release_pet_button.configure(
+            state="normal"
+            if idle and self.connected and bool(self.storage_tree.selection())
+            else "disabled"
+        )
         self.start_button.configure(
             state="normal"
             if idle
@@ -1996,6 +2544,56 @@ class PetRespecApp:
         self.password_entry.configure(state=login_state)
         self.server_combo.configure(state="readonly" if login_state == "normal" else "disabled")
         self.show_password.configure(state=login_state)
+        misc_input_state = "normal" if idle and self.connected else "disabled"
+        self.big_pill_count_entry.configure(state=misc_input_state)
+        self.book_count_entry.configure(state=misc_input_state)
+        self.exchange_big_pill_button.configure(
+            state="normal"
+            if idle and self.connected and self._misc_total(GIANT_ROCK_FRAGMENT_ID) >= 2
+            else "disabled"
+        )
+        self.use_book_button.configure(
+            state="normal"
+            if idle and self.connected and self._misc_total(EXPERIENCE_BOOK_ID) >= 1
+            else "disabled"
+        )
+        selected_pet = self.selected_pet
+        can_allocate_exp = (
+            idle
+            and self.connected
+            and selected_pet is not None
+            and bool(self.exp_tree_experience)
+        )
+        self.pet_experience_entry.configure(
+            state="normal" if can_allocate_exp else "disabled"
+        )
+        self.allocate_experience_button.configure(
+            state="normal" if can_allocate_exp else "disabled"
+        )
+        can_upgrade_zero_99 = (
+            can_allocate_exp
+            and int(selected_pet["reincarnation_degree"]) == 0
+            and int(selected_pet["level"]) < 99
+        )
+        self.upgrade_zero_99_button.configure(
+            state="normal" if can_upgrade_zero_99 else "disabled"
+        )
+        can_upgrade_ten_99 = (
+            can_allocate_exp
+            and not (
+                int(selected_pet["reincarnation_degree"]) == 10
+                and int(selected_pet["level"]) >= 99
+            )
+        )
+        self.upgrade_ten_99_button.configure(
+            state="normal" if can_upgrade_ten_99 else "disabled"
+        )
+        egg_state = "normal" if idle and self.connected else "disabled"
+        self.pet_egg_combo.configure(
+            state="readonly" if egg_state == "normal" else "disabled"
+        )
+        self.pet_egg_count_entry.configure(state=egg_state)
+        self.open_pet_eggs_button.configure(state=egg_state)
 
     def _poll_events(self) -> None:
         try:
@@ -2008,11 +2606,20 @@ class PetRespecApp:
 
     def _handle_event(self, event: str, payload: Any) -> None:
         if event == "connected":
-            server, bag_pets, storage_pets, quantities = payload
+            (
+                server,
+                bag_pets,
+                storage_pets,
+                quantities,
+                misc_quantities,
+                exp_tree_experience,
+            ) = payload
             self.connected = True
             self.bag_pets = bag_pets
             self.storage_pets = storage_pets
             self.item_quantities = quantities
+            self.misc_item_quantities = misc_quantities
+            self.exp_tree_experience = exp_tree_experience
             self._set_busy(None)
             self.connection_badge.configure(
                 text=f"已连接 {server} 服", bg="#dcefe9", fg=COLORS["success"]
@@ -2023,12 +2630,22 @@ class PetRespecApp:
             self._render_pet_list()
             self._render_storage_list()
             self._update_item_options()
+            self._render_misc_quantities()
+            self._render_exp_tree_experience()
             return
         if event == "refreshed":
-            bag_pets, storage_pets, quantities = payload
+            (
+                bag_pets,
+                storage_pets,
+                quantities,
+                misc_quantities,
+                exp_tree_experience,
+            ) = payload
             self.bag_pets = bag_pets
             self.storage_pets = storage_pets
             self.item_quantities = quantities
+            self.misc_item_quantities = misc_quantities
+            self.exp_tree_experience = exp_tree_experience
             self._set_busy(
                 None,
                 f"刷新完成，背包 {len(bag_pets)} 只，仓库 {len(storage_pets)} 只",
@@ -2036,6 +2653,39 @@ class PetRespecApp:
             self._render_pet_list()
             self._render_storage_list()
             self._update_item_options()
+            self._render_misc_quantities()
+            self._render_exp_tree_experience()
+            return
+        if event == "misc_completed":
+            (
+                completed_text,
+                quantities,
+                misc_quantities,
+                exp_tree_experience,
+            ) = payload
+            self.item_quantities = quantities
+            self.misc_item_quantities = misc_quantities
+            self.exp_tree_experience = exp_tree_experience
+            self._set_busy(None, completed_text)
+            self._update_item_options()
+            self._render_misc_quantities()
+            self._render_exp_tree_experience()
+            return
+        if event == "exp_completed":
+            completed_text, pet_id, bag_pets, exp_tree_experience = payload
+            self.bag_pets = bag_pets
+            self.exp_tree_experience = exp_tree_experience
+            self._set_busy(None, completed_text)
+            self._render_pet_list(preferred_pet_id=pet_id)
+            self._render_exp_tree_experience()
+            return
+        if event == "pet_eggs_opened":
+            completed_text, bag_pets, exp_tree_experience = payload
+            self.bag_pets = bag_pets
+            self.exp_tree_experience = exp_tree_experience
+            self._set_busy(None, completed_text)
+            self._render_pet_list()
+            self._render_exp_tree_experience()
             return
         if event == "storage_info":
             request_id, pet = payload
@@ -2055,6 +2705,17 @@ class PetRespecApp:
             self.item_quantities = quantities
             self.selected_pet = None
             self._set_busy(None, f"{action_text}完成")
+            self._render_pet_list()
+            self._render_storage_list()
+            self._update_item_options()
+            return
+        if event == "pet_released":
+            pet_name, bag_pets, storage_pets, quantities = payload
+            self.bag_pets = bag_pets
+            self.storage_pets = storage_pets
+            self.item_quantities = quantities
+            self.selected_pet = None
+            self._set_busy(None, f"已放生 {pet_name}")
             self._render_pet_list()
             self._render_storage_list()
             self._update_item_options()
