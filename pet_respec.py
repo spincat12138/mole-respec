@@ -47,8 +47,24 @@ class WashConfig:
     pet_id: int
     item_index: int
     mode: str
-    targets: tuple[int, ...]
+    targets: tuple[int, ...] | None
     max_attempts: int
+    alternative_targets: tuple[tuple[int, ...] | None, ...] = ()
+
+    @property
+    def target_groups(self) -> tuple[tuple[int, ...], ...]:
+        primary = (self.targets,) if self.targets is not None else ()
+        alternatives = tuple(
+            targets
+            for targets in self.alternative_targets
+            if targets is not None
+        )
+        return primary + alternatives
+
+    @property
+    def target_slots(self) -> tuple[tuple[int, ...] | None, ...]:
+        padding = (None,) * (2 - len(self.alternative_targets))
+        return (self.targets, *self.alternative_targets, *padding)
 
     def validate(self) -> None:
         if self.item_index not in range(len(ITEM_TYPES)):
@@ -56,12 +72,19 @@ class WashConfig:
         if self.mode not in ("base", "derived"):
             raise ValueError("请选择有效的洗点方式")
         fields = target_fields(self.item_index, self.mode)
-        if len(self.targets) != len(fields):
-            raise ValueError("期望数值数量与当前洗点方式不一致")
-        if any(not isinstance(value, int) or value < 0 for value in self.targets):
-            raise ValueError("期望数值必须是非负整数")
-        if not any(self.targets):
-            raise ValueError("至少填写一个大于 0 的期望数值")
+        if len(self.alternative_targets) > 2:
+            raise ValueError("最多只能启用三组候选条件")
+        if not self.target_groups:
+            raise ValueError("至少选择一组候选条件")
+        for index, targets in enumerate(self.target_slots, start=1):
+            if targets is None:
+                continue
+            if len(targets) != len(fields):
+                raise ValueError(f"候选 {index} 的期望数值数量与当前洗点方式不一致")
+            if any(not isinstance(value, int) or value < 0 for value in targets):
+                raise ValueError(f"候选 {index} 的期望数值必须是非负整数")
+            if not any(targets):
+                raise ValueError(f"候选 {index} 至少填写一个大于 0 的期望数值")
         if not isinstance(self.max_attempts, int) or self.max_attempts <= 0:
             raise ValueError("最多洗点次数必须是正整数")
 
@@ -150,6 +173,20 @@ def is_target_reached(
     return True
 
 
+def is_any_target_reached(
+    pet: Mapping[str, object],
+    item_index: int,
+    mode: str,
+    target_groups: Sequence[Sequence[int]],
+) -> bool:
+    if not target_groups:
+        raise ValueError("至少需要一组候选条件")
+    return any(
+        is_target_reached(pet, item_index, mode, targets)
+        for targets in target_groups
+    )
+
+
 class RespecRunner:
     """Execute a bounded respec loop against a connected backend."""
 
@@ -187,8 +224,8 @@ class RespecRunner:
             attempts += 1
             current = self._find_pet(self._backend.load_pets(), config.pet_id)
             self._backend.record_wash_result(current, config.item_index)
-            reached = is_target_reached(
-                current, config.item_index, config.mode, config.targets
+            reached = is_any_target_reached(
+                current, config.item_index, config.mode, config.target_groups
             )
             on_progress(
                 WashProgress(

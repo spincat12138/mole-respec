@@ -26,6 +26,7 @@ from pet_prediction import (
     find_pet_basis,
     predict_pet,
     round_display,
+    scenario,
     simulate_base,
 )
 from protocol_backend import ProtocolBackend
@@ -52,6 +53,58 @@ RESULT_REASON = {
     "inventory": "道具数量不足",
     "stopped": "已由用户停止",
 }
+
+AUTO_TARGET_WAVES = (
+    (5, 5, -5, 0, -5),
+    (-5, 5, 0, 5, -5),
+    (5, 0, -5, 5, -5),
+)
+AUTO_TARGET_KEYS = {
+    "base": (
+        frozenset(("physique", "strength")),
+        frozenset(("strength", "quick")),
+        frozenset(("physique", "quick")),
+    ),
+    "derived": (
+        frozenset(("hp_max", "attack")),
+        frozenset(("attack", "speed")),
+        frozenset(("hp_max", "speed")),
+    ),
+}
+
+
+def automatic_target_groups(
+    basis: PetBasis,
+    pet: Mapping[str, object],
+    item_index: int,
+    mode: str,
+) -> tuple[tuple[int, ...], ...]:
+    if item_index in (0, 1):
+        raise ValueError("一键填充仅适用于包含五项属性的洗点道具")
+    level = int(pet["level"])
+    rebirth = int(pet["reincarnation_degree"])
+    strength_points = (0, level - 1, 0, 0, 0)
+    fields = target_fields(item_index, mode)
+    groups = []
+    for wave, included_keys in zip(AUTO_TARGET_WAVES, AUTO_TARGET_KEYS[mode]):
+        target_base = apply_basis_wave(basis.base, wave)
+        result = scenario(target_base, level, rebirth, strength_points)
+        values: dict[str, int] = {
+            "grow_value": round_display(sum(target_base)),
+        }
+        values.update(
+            (key, value) for (key, _label), value in zip(BASE_FIELDS, result.efforts)
+        )
+        values.update(
+            (key, value) for (key, _label), value in zip(DERIVED_FIELDS, result.battle)
+        )
+        groups.append(
+            tuple(
+                values[field.key] if field.key in included_keys else 0
+                for field in fields
+            )
+        )
+    return tuple(groups)
 
 
 @dataclass(frozen=True)
@@ -86,9 +139,12 @@ class PetRespecApp:
         self.pet_by_row: dict[str, dict[str, object]] = {}
         self.storage_pet_by_row: dict[str, dict[str, object]] = {}
         self.selected_pet: dict[str, object] | None = None
+        self.remembered_pet_selection: tuple[int, int] | None = None
         self.storage_request_id = 0
         self.item_quantities: dict[int, int] = {}
-        self.target_entries: list[tk.StringVar] = []
+        self.target_group_entries: list[list[tk.StringVar]] = []
+        self.target_group_enabled_vars: list[tk.BooleanVar] = []
+        self.target_group_entry_widgets: list[list[ttk.Entry]] = []
         self.rendered_target_rule: tuple[int, str] | None = None
         self.simulator_basis: PetBasis | None = None
         self.prediction_pet: dict[str, object] | None = None
@@ -106,8 +162,8 @@ class PetRespecApp:
 
     def _configure_root(self) -> None:
         self.root.title("摩尔勇士宠物洗点工具")
-        self.root.geometry("1180x780")
-        self.root.minsize(980, 740)
+        self.root.geometry("1180x840")
+        self.root.minsize(980, 780)
         self.root.configure(background=COLORS["background"])
 
     def _configure_styles(self) -> None:
@@ -208,6 +264,7 @@ class PetRespecApp:
             foreground=[("disabled", "#f4f7f7")],
         )
         style.configure("Tool.TButton", padding=(10, 6))
+        style.configure("CompactTool.TButton", padding=(8, 2))
         style.configure("Danger.TButton", padding=(12, 7), foreground=COLORS["danger"])
         style.configure(
             "Treeview",
@@ -1035,6 +1092,13 @@ class PetRespecApp:
         )
         self.base_mode.pack(side="left")
         self.derived_mode.pack(side="left", padx=(12, 0))
+        self.fill_targets_button = ttk.Button(
+            mode_buttons,
+            text="一键填充",
+            style="CompactTool.TButton",
+            command=self._fill_target_candidates,
+        )
+        self.fill_targets_button.pack(side="left", padx=(18, 0))
 
         count_box = ttk.Frame(config, style="Surface.TFrame")
         count_box.grid(row=0, column=2, sticky="ew")
@@ -1046,10 +1110,14 @@ class PetRespecApp:
         target_header = ttk.Frame(parent, style="Surface.TFrame")
         target_header.pack(fill="x", pady=(16, 7))
         ttk.Label(target_header, text="期望数值", style="Section.TLabel").pack(side="left")
+        self.target_candidate_controls = ttk.Frame(
+            target_header, style="Surface.TFrame"
+        )
+        self.target_candidate_controls.pack(side="right")
         self.target_hint_var = tk.StringVar()
         ttk.Label(
             target_header, textvariable=self.target_hint_var, style="Muted.TLabel"
-        ).pack(side="right")
+        ).pack(side="right", padx=(0, 14))
         self.targets_frame = ttk.Frame(parent, style="Surface.TFrame")
         self.targets_frame.pack(fill="x")
 
@@ -1268,6 +1336,7 @@ class PetRespecApp:
             self._render_prediction(None)
             self._clear_simulator_species()
             return
+        self._remember_pet_selection(pet)
         type_name = self.backend.pet_type_name(int(pet["type_id"]))
         self.pet_title_var.set(str(pet["nick"]))
         self.pet_meta_var.set(
@@ -1591,9 +1660,7 @@ class PetRespecApp:
         ).pack(side="right")
 
     def _render_pet_list(self, preferred_pet_id: int | None = None) -> None:
-        current_id = preferred_pet_id
-        if current_id is None and self.selected_pet is not None:
-            current_id = int(self.selected_pet["pet_id"])
+        current_id = self._pet_id_to_restore(preferred_pet_id)
         self.pet_tree.delete(*self.pet_tree.get_children())
         self.pet_by_row.clear()
         selected_row = None
@@ -1622,6 +1689,22 @@ class PetRespecApp:
             self.pet_list_note.place(relx=0.5, rely=0.48, anchor="center")
             self._show_pet(None)
         self._sync_controls()
+
+    def _remember_pet_selection(self, pet: Mapping[str, object]) -> None:
+        self.remembered_pet_selection = (
+            int(self.backend.uid),
+            int(pet["pet_id"]),
+        )
+
+    def _pet_id_to_restore(self, preferred_pet_id: int | None) -> int | None:
+        if preferred_pet_id is not None:
+            return int(preferred_pet_id)
+        if self.selected_pet is not None:
+            return int(self.selected_pet["pet_id"])
+        if self.remembered_pet_selection is None:
+            return None
+        uid, pet_id = self.remembered_pet_selection
+        return pet_id if uid == int(self.backend.uid) else None
 
     def _render_storage_list(self) -> None:
         self.storage_tree.delete(*self.storage_tree.get_children())
@@ -1662,10 +1745,20 @@ class PetRespecApp:
 
     def _render_targets(self) -> None:
         previous_rule = self.rendered_target_rule
-        previous_values = [variable.get() for variable in self.target_entries]
+        previous_values = [
+            [variable.get() for variable in group]
+            for group in self.target_group_entries
+        ]
+        previous_enabled = [
+            variable.get() for variable in self.target_group_enabled_vars
+        ]
         for child in self.targets_frame.winfo_children():
             child.destroy()
-        self.target_entries.clear()
+        for child in self.target_candidate_controls.winfo_children():
+            child.destroy()
+        self.target_group_entries.clear()
+        self.target_group_enabled_vars.clear()
+        self.target_group_entry_widgets.clear()
         item_index = self._item_index()
         growth_only = item_index in (0, 1)
         mode_state = "disabled" if growth_only else "normal"
@@ -1676,41 +1769,145 @@ class PetRespecApp:
 
         fields = target_fields(item_index, self.mode_var.get())
         current_rule = (item_index, self.mode_var.get())
-        keep_values = previous_rule == current_rule and len(previous_values) == len(fields)
-        for index, field in enumerate(fields):
-            box = ttk.Frame(self.targets_frame, style="Surface.TFrame")
-            box.grid(
-                row=index // 3,
-                column=index % 3,
+        keep_values = previous_rule == current_rule
+        for column in range(3):
+            self.targets_frame.columnconfigure(
+                column, weight=1, uniform="target_candidate"
+            )
+        for group_index in range(3):
+            group = ttk.Frame(self.targets_frame, style="Surface.TFrame")
+            group.grid(
+                row=0,
+                column=group_index,
                 sticky="ew",
-                padx=(0 if index % 3 == 0 else 10, 0),
-                pady=(0 if index < 3 else 10, 0),
+                padx=(0 if group_index == 0 else 14, 0),
             )
-            self.targets_frame.columnconfigure(index % 3, weight=1)
-            ttk.Label(
-                box,
-                text=f"{field.label} ({field.comparison_label})",
-                style="Body.TLabel",
-            ).pack(anchor="w")
-            variable = tk.StringVar(
-                value=previous_values[index] if keep_values else "0"
+            for column in range(3):
+                group.columnconfigure(column, weight=1, uniform="target_field")
+
+            enabled = tk.BooleanVar(
+                value=(
+                    previous_enabled[group_index]
+                    if keep_values and group_index < len(previous_enabled)
+                    else group_index == 0
+                )
             )
-            self.target_entries.append(variable)
-            ttk.Entry(box, textvariable=variable).pack(fill="x", pady=(5, 0))
+            self.target_group_enabled_vars.append(enabled)
+            ttk.Checkbutton(
+                self.target_candidate_controls,
+                text=f"候选 {group_index + 1}",
+                variable=enabled,
+                command=lambda index=group_index: self._on_target_group_toggle(
+                    index
+                ),
+            ).grid(
+                row=0,
+                column=group_index,
+                sticky="w",
+                padx=(0 if group_index == 0 else 12, 0),
+            )
+
+            variables: list[tk.StringVar] = []
+            entries: list[ttk.Entry] = []
+            saved_values = (
+                previous_values[group_index]
+                if keep_values and group_index < len(previous_values)
+                else []
+            )
+            for field_index, field in enumerate(fields):
+                box = ttk.Frame(group, style="Surface.TFrame")
+                box.grid(
+                    row=field_index // 3,
+                    column=field_index % 3,
+                    sticky="ew",
+                    padx=(0 if field_index % 3 == 0 else 6, 0),
+                    pady=(0 if field_index < 3 else 8, 0),
+                )
+                ttk.Label(
+                    box,
+                    text=f"{field.label} ({field.comparison_label})",
+                    style="Body.TLabel",
+                ).pack(anchor="w")
+                variable = tk.StringVar(
+                    value=(
+                        saved_values[field_index]
+                        if field_index < len(saved_values)
+                        else "0"
+                    )
+                )
+                entry = ttk.Entry(box, textvariable=variable, width=5)
+                entry.pack(fill="x", pady=(5, 0))
+                variables.append(variable)
+                entries.append(entry)
+            self.target_group_entries.append(variables)
+            self.target_group_entry_widgets.append(entries)
+
+        for group_index in range(3):
+            self._sync_target_group_state(group_index)
         self.rendered_target_rule = current_rule
-        self.target_hint_var.set("0 表示不判断")
+        self.target_hint_var.set("0 = 忽略；至少选一组，任一满足即停止")
+        self._sync_controls()
+
+    def _on_target_group_toggle(self, group_index: int) -> None:
+        self._sync_target_group_state(group_index)
+        self._sync_controls()
+
+    def _sync_target_group_state(self, group_index: int) -> None:
+        enabled = self.target_group_enabled_vars[group_index].get()
+        state = "normal" if enabled else "disabled"
+        for entry in self.target_group_entry_widgets[group_index]:
+            entry.configure(state=state)
+
+    def _fill_target_candidates(self) -> None:
+        try:
+            if self.selected_pet is None:
+                raise ValueError("请先选择宠物")
+            if self.simulator_basis is None:
+                raise ValueError("当前宠物没有可用的基数数据")
+            groups = automatic_target_groups(
+                self.simulator_basis,
+                self.selected_pet,
+                self._item_index(),
+                self.mode_var.get(),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            messagebox.showerror("无法填充", str(exc), parent=self.root)
+            return
+
+        for group_index, values in enumerate(groups):
+            self.target_group_enabled_vars[group_index].set(True)
+            self._sync_target_group_state(group_index)
+            for variable, value in zip(
+                self.target_group_entries[group_index], values
+            ):
+                variable.set(str(value))
+
+        level = int(self.selected_pet["level"])
+        rebirth = int(self.selected_pet["reincarnation_degree"])
+        self.status_var.set(
+            f"已按 {rebirth}转{level}级、全力加点填充三组候选"
+        )
+        self._sync_controls()
 
     def _start_wash(self) -> None:
         if not self.connected or self.busy_action or self.selected_pet is None:
             return
         try:
-            targets = tuple(int(variable.get().strip()) for variable in self.target_entries)
+            target_slots = tuple(
+                (
+                    tuple(int(variable.get().strip()) for variable in entries)
+                    if self.target_group_enabled_vars[index].get()
+                    else None
+                )
+                for index, entries in enumerate(self.target_group_entries)
+            )
             config = WashConfig(
                 pet_id=int(self.selected_pet["pet_id"]),
                 item_index=self._item_index(),
                 mode=self.mode_var.get(),
-                targets=targets,
+                targets=target_slots[0],
                 max_attempts=int(self.max_attempts_var.get().strip()),
+                alternative_targets=target_slots[1:],
             )
             config.validate()
         except ValueError as exc:
@@ -1772,7 +1969,19 @@ class PetRespecApp:
         )
         self.start_button.configure(
             state="normal"
-            if idle and self.connected and self.selected_pet is not None
+            if idle
+            and self.connected
+            and self.selected_pet is not None
+            and any(variable.get() for variable in self.target_group_enabled_vars)
+            else "disabled"
+        )
+        self.fill_targets_button.configure(
+            state="normal"
+            if idle
+            and self.connected
+            and self.selected_pet is not None
+            and self.simulator_basis is not None
+            and self._item_index() not in (0, 1)
             else "disabled"
         )
         self.stop_button.configure(state="normal" if self.busy_action == "wash" else "disabled")
@@ -1920,10 +2129,18 @@ class PetRespecApp:
         self.item_combo.current(config.item_index)
         self.mode_var.set(config.mode)
         self._render_targets()
-        for variable, value in zip(self.target_entries, config.targets):
-            variable.set(str(value))
+        for group_index, targets in enumerate(config.target_slots):
+            enabled = targets is not None
+            self.target_group_enabled_vars[group_index].set(enabled)
+            self._sync_target_group_state(group_index)
+            if targets is not None:
+                for variable, value in zip(
+                    self.target_group_entries[group_index], targets
+                ):
+                    variable.set(str(value))
         self.max_attempts_var.set(str(config.max_attempts))
         self.notebook.select(self.result_tab)
+        self._sync_controls()
 
     def _on_close(self) -> None:
         self.stop_event.set()

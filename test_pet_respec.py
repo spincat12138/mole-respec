@@ -2,10 +2,13 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
+from gui import PetRespecApp, automatic_target_groups
 from pet_respec import (
     RespecRunner,
     WashConfig,
+    is_any_target_reached,
     is_target_reached,
     target_fields,
 )
@@ -149,6 +152,131 @@ class TargetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "至少填写"):
             WashConfig(7, 3, "base", (0, 0, 0, 0, 0), 10).validate()
 
+    def test_config_requires_at_least_one_enabled_candidate(self):
+        with self.assertRaisesRegex(ValueError, "至少选择一组"):
+            WashConfig(
+                7,
+                3,
+                "base",
+                None,
+                10,
+                alternative_targets=(None, None),
+            ).validate()
+
+    def test_any_enabled_candidate_can_reach_target(self):
+        pet = make_pet(growth=102)
+        groups = (
+            (999, 0, 0, 0, 0, 0),
+            (102, 0, 0, 0, 0, 0),
+        )
+
+        self.assertTrue(is_any_target_reached(pet, 2, "base", groups))
+
+    def test_each_enabled_candidate_must_have_a_nonzero_target(self):
+        config = WashConfig(
+            7,
+            3,
+            "base",
+            (10, 0, 0, 0, 0),
+            10,
+            alternative_targets=((0, 0, 0, 0, 0),),
+        )
+
+        with self.assertRaisesRegex(ValueError, "候选 2 至少填写"):
+            config.validate()
+
+    def test_config_accepts_at_most_three_candidate_groups(self):
+        config = WashConfig(
+            7,
+            0,
+            "base",
+            (100,),
+            10,
+            alternative_targets=((101,), (102,), (103,)),
+        )
+
+        with self.assertRaisesRegex(ValueError, "最多只能启用三组"):
+            config.validate()
+
+    def test_disabled_second_candidate_keeps_third_candidate_slot(self):
+        third = (102, 0, 0, 0, 0, 0)
+        config = WashConfig(
+            7,
+            2,
+            "base",
+            (999, 0, 0, 0, 0, 0),
+            5,
+            alternative_targets=(None, third),
+        )
+
+        config.validate()
+        self.assertEqual(config.target_slots, (config.targets, None, third))
+        self.assertEqual(config.target_groups, (config.targets, third))
+
+    def test_first_candidate_can_be_disabled(self):
+        second = (102, 0, 0, 0, 0, 0)
+        config = WashConfig(
+            7,
+            2,
+            "base",
+            None,
+            5,
+            alternative_targets=(second, None),
+        )
+
+        config.validate()
+        self.assertEqual(config.target_slots, (None, second, None))
+        self.assertEqual(config.target_groups, (second,))
+
+    def test_automatic_targets_use_fixed_waves_and_current_pet_state(self):
+        basis = PetBasis("test", "测试宠物", "normal", (26, 66, 28, 68, 9), 197)
+        pet = {"level": 50, "reincarnation_degree": 6}
+        waves = (
+            (5, 5, -5, 0, -5),
+            (-5, 5, 0, 5, -5),
+            (5, 0, -5, 5, -5),
+        )
+
+        base_groups = automatic_target_groups(basis, pet, 2, "base")
+        derived_groups = automatic_target_groups(basis, pet, 3, "derived")
+
+        expected = [
+            scenario(
+                apply_basis_wave(basis.base, wave),
+                50,
+                6,
+                (0, 49, 0, 0, 0),
+            )
+            for wave in waves
+        ]
+        self.assertEqual(
+            base_groups,
+            (
+                (0, expected[0].efforts[0], expected[0].efforts[1], 0, 0, 0),
+                (0, 0, expected[1].efforts[1], 0, expected[1].efforts[3], 0),
+                (0, expected[2].efforts[0], 0, 0, expected[2].efforts[3], 0),
+            ),
+        )
+        self.assertEqual(
+            derived_groups,
+            (
+                (expected[0].battle[0], expected[0].battle[1], 0, 0, 0),
+                (0, expected[1].battle[1], 0, expected[1].battle[3], 0),
+                (expected[2].battle[0], 0, 0, expected[2].battle[3], 0),
+            ),
+        )
+
+    def test_automatic_targets_reject_growth_only_items(self):
+        basis = PetBasis("test", "测试宠物", "normal", (26, 66, 28, 68, 9), 197)
+
+        with self.assertRaisesRegex(ValueError, "仅适用于"):
+            automatic_target_groups(
+                basis,
+                {"level": 50, "reincarnation_degree": 0},
+                0,
+                "base",
+            )
+
 
 class RunnerTests(unittest.TestCase):
     def test_runner_washes_once_when_initial_pet_already_reaches_target(self):
@@ -193,6 +321,28 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(result.reason, "inventory")
         self.assertEqual(result.attempts, 1)
+
+    def test_runner_stops_when_third_candidate_is_reached(self):
+        backend = FakeBackend([make_pet(growth=100)])
+        result = RespecRunner(backend, ITEM_IDS).run(
+            WashConfig(
+                7,
+                2,
+                "base",
+                (999, 0, 0, 0, 0, 0),
+                5,
+                alternative_targets=(
+                    None,
+                    (102, 0, 0, 0, 0, 0),
+                ),
+            ),
+            lambda: False,
+            lambda _progress: None,
+        )
+
+        self.assertEqual(result.reason, "target")
+        self.assertEqual(result.attempts, 2)
+        self.assertEqual(result.final_pet["grow_value"], 102)
 
     def test_runner_honors_stop_before_next_request(self):
         backend = FakeBackend([make_pet(growth=100)], quantity=5)
@@ -284,6 +434,29 @@ class ProtocolBackendTests(unittest.TestCase):
             row,
             ("洗宠", 123456, 6, "大丸子", 99, "test-pet", 197),
         )
+
+
+class PetSelectionTests(unittest.TestCase):
+    @staticmethod
+    def make_app(uid=123456):
+        app = PetRespecApp.__new__(PetRespecApp)
+        app.backend = SimpleNamespace(uid=uid)
+        app.selected_pet = None
+        app.remembered_pet_selection = None
+        return app
+
+    def test_remembers_selected_pet_for_same_account_after_reconnect(self):
+        app = self.make_app()
+        app._remember_pet_selection({"pet_id": 42})
+
+        self.assertEqual(app._pet_id_to_restore(None), 42)
+
+    def test_does_not_restore_pet_selection_for_another_account(self):
+        app = self.make_app()
+        app._remember_pet_selection({"pet_id": 42})
+        app.backend.uid = 654321
+
+        self.assertIsNone(app._pet_id_to_restore(None))
 
 
 class PetPredictionTests(unittest.TestCase):
