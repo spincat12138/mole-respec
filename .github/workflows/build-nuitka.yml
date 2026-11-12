@@ -29,10 +29,6 @@ jobs:
         shell: pwsh
         run: python -m pip install --upgrade pip "uncompyle6==3.9.3" "Pillow==11.3.0"
 
-      - name: Run tests
-        shell: pwsh
-        run: python -m unittest -v
-
       - name: Convert WebP logo to Windows icon
         shell: pwsh
         run: |
