@@ -63,8 +63,10 @@ jobs:
           output-file: mole-respec.exe
           enable-plugins: tk-inter
           include-module: moer,item_names,pet_names
-          include-data-dir: ref=ref
-          noinclude-data-files: ref/index.html
+          include-data-files: |
+            ref/egg_codes.bin=ref/egg_codes.bin
+            ref/pet_bases.json=ref/pet_bases.json
+          report: build/nuitka-report.xml
           windows-console-mode: disable
           product-name: mole-respec
           product-version: "1.0.0"
@@ -72,6 +74,23 @@ jobs:
           file-description: Mole Respec desktop application
           windows-icon-from-ico: build/logo.ico
           assume-yes-for-downloads: true
+
+      - name: Verify packaged resources
+        shell: pwsh
+        run: |
+          [xml]$report = Get-Content -Raw build/nuitka-report.xml
+          $included = @(
+            $report.SelectNodes("//data_file") |
+              ForEach-Object { $_.name.Replace("\", "/") }
+          )
+          $required = @(
+            "ref/egg_codes.bin"
+            "ref/pet_bases.json"
+          )
+          $missing = @($required | Where-Object { $_ -notin $included })
+          if ($missing.Count -gt 0) {
+            throw "Nuitka package is missing required resources: $($missing -join ', ')"
+          }
 
       - name: Upload executable
         uses: actions/upload-artifact@v4
