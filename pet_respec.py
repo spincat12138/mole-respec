@@ -173,11 +173,6 @@ class RespecRunner:
         quantities = self._backend.load_item_quantities()
         item_id = self._item_ids[config.item_index]
 
-        if is_target_reached(current, config.item_index, config.mode, config.targets):
-            return WashResult(
-                "target", 0, initial, dict(current), quantities.get(item_id, 0)
-            )
-
         attempts = 0
         reason = "limit"
         while attempts < config.max_attempts:

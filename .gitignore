@@ -10,5 +10,5 @@ build/
 *.onefile-build/
 
 ref/index.html
-test_pet_repec.py
+test_pet_respec.py
 tools/

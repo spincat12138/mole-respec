@@ -151,6 +151,22 @@ class TargetTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
+    def test_runner_washes_once_when_initial_pet_already_reaches_target(self):
+        backend = FakeBackend([make_pet(growth=100)], quantity=5)
+        progress = []
+
+        result = RespecRunner(backend, ITEM_IDS).run(
+            WashConfig(7, 2, "base", (100, 0, 0, 0, 0, 0), 5),
+            lambda: False,
+            progress.append,
+        )
+
+        self.assertEqual(result.reason, "target")
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(len(progress), 1)
+        self.assertEqual(result.remaining_items, 4)
+        self.assertEqual(backend.recorded_results[0][0]["grow_value"], 101)
+
     def test_runner_stops_when_target_is_reached(self):
         backend = FakeBackend([make_pet(growth=100)], quantity=5)
         progress = []
