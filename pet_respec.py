@@ -129,6 +129,11 @@ class RespecBackend(Protocol):
     ) -> None: ...
 
 
+def is_pet_washable(pet: Mapping[str, object]) -> bool:
+    """Only pets that have never reincarnated can be washed."""
+    return int(pet["reincarnation_degree"]) == 0
+
+
 def target_fields(item_index: int, mode: str) -> tuple[TargetField, ...]:
     """Return the target schema used by moer.py's xd workflow."""
     if item_index not in range(len(ITEM_TYPES)):
@@ -206,6 +211,8 @@ class RespecRunner:
 
         pets = self._backend.load_pets()
         current = self._find_pet(pets, config.pet_id)
+        if not is_pet_washable(current):
+            raise ValueError("只有0转宠物可以洗点")
         initial = dict(current)
         quantities = self._backend.load_item_quantities()
         item_id = self._item_ids[config.item_index]

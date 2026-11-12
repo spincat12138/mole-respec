@@ -10,6 +10,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Mapping
 
+from pet_respec import is_pet_washable
+
 
 class ProtocolBackend:
     def __init__(self) -> None:
@@ -125,6 +127,8 @@ class ProtocolBackend:
         item_index: int,
         quantities: dict[int, int],
     ) -> None:
+        if not is_pet_washable(pet):
+            raise ValueError("只有0转宠物可以洗点")
         game_socket, uid_bytes = self._session()
         self._moer.eatwz(game_socket, uid_bytes, pet, item_index, quantities)
 

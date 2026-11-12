@@ -17,6 +17,7 @@ from pet_respec import (
     WashConfig,
     WashProgress,
     WashResult,
+    is_pet_washable,
     target_fields,
 )
 from pet_prediction import (
@@ -90,7 +91,7 @@ def automatic_target_groups(
         target_base = apply_basis_wave(basis.base, wave)
         result = scenario(target_base, level, rebirth, strength_points)
         values: dict[str, int] = {
-            "grow_value": round_display(sum(target_base)),
+            "grow_value": round_display(basis.growth),
         }
         values.update(
             (key, value) for (key, _label), value in zip(BASE_FIELDS, result.efforts)
@@ -100,7 +101,9 @@ def automatic_target_groups(
         )
         groups.append(
             tuple(
-                values[field.key] if field.key in included_keys else 0
+                values[field.key]
+                if field.key == "grow_value" or field.key in included_keys
+                else 0
                 for field in fields
             )
         )
@@ -1893,6 +1896,8 @@ class PetRespecApp:
         if not self.connected or self.busy_action or self.selected_pet is None:
             return
         try:
+            if not is_pet_washable(self.selected_pet):
+                raise ValueError("只有0转宠物可以洗点")
             target_slots = tuple(
                 (
                     tuple(int(variable.get().strip()) for variable in entries)
@@ -1972,6 +1977,7 @@ class PetRespecApp:
             if idle
             and self.connected
             and self.selected_pet is not None
+            and is_pet_washable(self.selected_pet)
             and any(variable.get() for variable in self.target_group_enabled_vars)
             else "disabled"
         )
