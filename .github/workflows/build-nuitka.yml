@@ -1,0 +1,82 @@
+name: Build Windows executable
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build mole-respec
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: ${{ github.workspace }}\ref
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install project dependencies
+        shell: pwsh
+        run: python -m pip install --upgrade pip "uncompyle6==3.9.3" "Pillow==11.3.0"
+
+      - name: Run tests
+        shell: pwsh
+        run: python -m unittest -v
+
+      - name: Convert WebP logo to Windows icon
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path build -Force | Out-Null
+          @'
+          from PIL import Image
+
+          image = Image.open("logo.webp").convert("RGBA")
+          image.thumbnail((256, 256), Image.Resampling.LANCZOS)
+          canvas = Image.new("RGBA", (256, 256), (255, 255, 255, 255))
+          canvas.alpha_composite(
+              image,
+              ((256 - image.width) // 2, (256 - image.height) // 2),
+          )
+          canvas.save(
+              "build/logo.ico",
+              format="ICO",
+              sizes=[(256, 256), (128, 128), (64, 64), (48, 48), (32, 32), (16, 16)],
+          )
+          '@ | python -
+
+      - name: Build with Nuitka
+        uses: Nuitka/Nuitka-Action@99c9d3ab258c7008c0604617d925574101327e5d
+        with:
+          script-name: app.py
+          mode: onefile
+          output-dir: build
+          output-file: mole-respec.exe
+          enable-plugins: tk-inter
+          include-module: moer,item_names,pet_names
+          include-data-dir: ref=ref
+          noinclude-data-files: ref/index.html
+          windows-console-mode: disable
+          product-name: mole-respec
+          product-version: "1.0.0"
+          file-version: "1.0.0"
+          file-description: Mole Respec desktop application
+          windows-icon-from-ico: build/logo.ico
+          assume-yes-for-downloads: true
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: mole-respec-windows
+          path: build/mole-respec.exe
+          if-no-files-found: error
+          retention-days: 14
