@@ -61,7 +61,7 @@ _PET_EGG_ITEMS = tuple(
     sorted(
         (item_id, name)
         for item_id, name in _ITEM_NAMES.items()
-        if name.endswith('精灵蛋')
+        if name.endswith(('精灵蛋', '精品蛋'))
     )
 )
 _KD_VALUE_KEYS = ('grow_value', 'hp_max', 'attack', 'defense', 'speed', 'mp_max')
