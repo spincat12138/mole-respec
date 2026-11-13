@@ -16,6 +16,20 @@ from pet_respec import is_pet_washable
 GIANT_ROCK_FRAGMENT_ID = 290011
 EXPERIENCE_BOOK_ID = 350050
 MISC_ITEM_IDS = (GIANT_ROCK_FRAGMENT_ID, EXPERIENCE_BOOK_ID)
+PET_NICKNAME_MAX_BYTES = 16
+
+
+def validate_pet_nickname(name: str) -> str:
+    if not isinstance(name, str):
+        raise ValueError("宠物昵称必须是字符串")
+    nickname = name.strip()
+    if not nickname:
+        raise ValueError("宠物昵称不能为空")
+    if any(not character.isprintable() for character in nickname):
+        raise ValueError("宠物昵称不能包含控制字符")
+    if len(nickname.encode("utf-8")) > PET_NICKNAME_MAX_BYTES:
+        raise ValueError("宠物昵称不能超过16个UTF-8字节（中文通常最多5个字）")
+    return nickname
 
 
 class ProtocolBackend:
@@ -129,6 +143,11 @@ class ProtocolBackend:
     def release_pet(self, pet: Mapping[str, object]) -> None:
         game_socket, uid_bytes = self._session()
         self._moer._pet_release(game_socket, uid_bytes, pet)
+
+    def change_pet_name(self, pet: Mapping[str, object], name: str) -> None:
+        nickname = validate_pet_nickname(name)
+        game_socket, uid_bytes = self._session()
+        self._moer._pet_change_name(game_socket, uid_bytes, pet, nickname)
 
     def load_item_quantities(self) -> dict[int, int]:
         game_socket, uid_bytes = self._session()

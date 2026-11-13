@@ -6,7 +6,7 @@ import queue
 import threading
 import tkinter as tk
 from dataclasses import dataclass
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Callable, Mapping
 
 from pet_respec import (
@@ -35,6 +35,7 @@ from protocol_backend import (
     EXPERIENCE_BOOK_ID,
     GIANT_ROCK_FRAGMENT_ID,
     ProtocolBackend,
+    validate_pet_nickname,
 )
 from skill_names import load_skill_names
 
@@ -1203,13 +1204,20 @@ class PetRespecApp:
 
         detail_actions = ttk.Frame(detail_header, style="Surface.TFrame")
         detail_actions.pack(side="right", padx=(12, 0))
+        self.change_pet_name_button = ttk.Button(
+            detail_actions,
+            text="修改昵称",
+            style="Tool.TButton",
+            command=self._change_selected_pet_name,
+        )
+        self.change_pet_name_button.pack(side="left")
         self.to_storage_button = ttk.Button(
             detail_actions,
             text="放回仓库",
             style="Tool.TButton",
             command=lambda: self._move_selected_pet("to_storage"),
         )
-        self.to_storage_button.pack(side="left")
+        self.to_storage_button.pack(side="left", padx=(8, 0))
         self.to_bag_button = ttk.Button(
             detail_actions,
             text="取回背包",
@@ -1761,6 +1769,69 @@ class PetRespecApp:
                 )
             except Exception as exc:
                 self.events.put(("error", ("move_pet", exc)))
+
+        self._run_worker(work)
+
+    def _change_selected_pet_name(self) -> None:
+        if not self.connected or self.busy_action:
+            return
+
+        selection = self.pet_tree.selection()
+        pet = self.pet_by_row.get(selection[0]) if selection else None
+        location = "bag"
+        if pet is None:
+            selection = self.storage_tree.selection()
+            pet = self.storage_pet_by_row.get(selection[0]) if selection else None
+            location = "storage"
+        if pet is None:
+            return
+
+        old_name = str(pet["nick"])
+        entered_name = simpledialog.askstring(
+            "修改宠物昵称",
+            "请输入新昵称：",
+            initialvalue=old_name,
+            parent=self.root,
+        )
+        if entered_name is None:
+            return
+        try:
+            new_name = validate_pet_nickname(entered_name)
+        except ValueError as exc:
+            messagebox.showerror("昵称无效", str(exc), parent=self.root)
+            return
+        if new_name == old_name:
+            return
+
+        pet_id = int(pet["pet_id"])
+        self._set_busy("change_pet_name", f"正在将 {old_name} 改名为 {new_name}")
+
+        def work() -> None:
+            try:
+                self.backend.change_pet_name(pet, new_name)
+                bag_pets = self.backend.load_pets()
+                storage_pets = self.backend.load_storage_pets()
+                refreshed_pets = bag_pets if location == "bag" else storage_pets
+                refreshed_pet = next(
+                    (
+                        candidate
+                        for candidate in refreshed_pets
+                        if int(candidate["pet_id"]) == pet_id
+                    ),
+                    None,
+                )
+                if refreshed_pet is None:
+                    raise LookupError("改名后未找到所选宠物")
+                if str(refreshed_pet["nick"]) != new_name:
+                    raise RuntimeError("服务端未接受宠物昵称修改")
+                self.events.put(
+                    (
+                        "pet_renamed",
+                        (pet_id, new_name, location, bag_pets, storage_pets),
+                    )
+                )
+            except Exception as exc:
+                self.events.put(("error", ("change_pet_name", exc)))
 
         self._run_worker(work)
 
@@ -2348,9 +2419,10 @@ class PetRespecApp:
         uid, pet_id = self.remembered_pet_selection
         return pet_id if uid == int(self.backend.uid) else None
 
-    def _render_storage_list(self) -> None:
+    def _render_storage_list(self, preferred_pet_id: int | None = None) -> None:
         self.storage_tree.delete(*self.storage_tree.get_children())
         self.storage_pet_by_row.clear()
+        selected_row = None
         for pet in self.storage_pets:
             type_name = self.backend.pet_type_name(int(pet["type_id"]))
             row = self.storage_tree.insert(
@@ -2360,6 +2432,8 @@ class PetRespecApp:
                 values=(type_name, pet["level"]),
             )
             self.storage_pet_by_row[row] = pet
+            if preferred_pet_id == int(pet["pet_id"]):
+                selected_row = row
         if self.storage_pets:
             self.storage_list_note.place_forget()
         else:
@@ -2367,6 +2441,10 @@ class PetRespecApp:
                 text="宠物仓库为空" if self.connected else "连接后显示宠物仓库"
             )
             self.storage_list_note.place(relx=0.5, rely=0.5, anchor="center")
+        if selected_row is not None:
+            self.storage_tree.selection_set(selected_row)
+            self.storage_tree.focus(selected_row)
+            self.storage_tree.see(selected_row)
         self._sync_controls()
 
     def _item_index(self) -> int:
@@ -2624,6 +2702,13 @@ class PetRespecApp:
         self.connect_button.configure(state="normal" if idle and not self.connected else "disabled")
         self.disconnect_button.configure(state="normal" if idle and self.connected else "disabled")
         self.refresh_button.configure(state="normal" if idle and self.connected else "disabled")
+        self.change_pet_name_button.configure(
+            state="normal"
+            if idle
+            and self.connected
+            and bool(self.pet_tree.selection() or self.storage_tree.selection())
+            else "disabled"
+        )
         self.to_storage_button.configure(
             state="normal"
             if idle and self.connected and bool(self.pet_tree.selection())
@@ -2889,6 +2974,25 @@ class PetRespecApp:
             self._render_pet_list()
             self._render_storage_list()
             self._update_item_options()
+            return
+        if event == "pet_renamed":
+            pet_id, new_name, location, bag_pets, storage_pets = payload
+            self.bag_pets = bag_pets
+            self.storage_pets = storage_pets
+            self.selected_pet = None
+            self._set_busy(None, f"宠物昵称已修改为 {new_name}")
+            self._render_pet_list(
+                preferred_pet_id=pet_id if location == "bag" else None
+            )
+            self._render_storage_list(
+                preferred_pet_id=pet_id if location == "storage" else None
+            )
+            if location == "storage":
+                bag_selection = self.pet_tree.selection()
+                if bag_selection:
+                    self.pet_tree.selection_remove(*bag_selection)
+                self.selected_pet = None
+                self._select_storage_pet()
             return
         if event == "progress":
             config, progress = payload
