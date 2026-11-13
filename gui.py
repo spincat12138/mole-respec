@@ -37,6 +37,7 @@ from protocol_backend import (
     ProtocolBackend,
     validate_pet_nickname,
 )
+from map_locations import MAP_LOCATIONS
 from skill_names import load_skill_names
 
 
@@ -165,6 +166,7 @@ class PetRespecApp:
         self.backend = ProtocolBackend()
         self.skill_names = load_skill_names()
         self.pet_egg_items = self.backend.pet_egg_items
+        self.map_locations = MAP_LOCATIONS
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.stop_event = threading.Event()
         self.worker: threading.Thread | None = None
@@ -700,6 +702,31 @@ class PetRespecApp:
         self.pet_egg_count_entry.bind(
             "<Return>", lambda _event: self._open_pet_eggs()
         )
+
+        ttk.Label(egg_row, text="地图传送", style="AltBody.TLabel").grid(
+            row=0, column=3, sticky="w", padx=(24, 0)
+        )
+        map_values = tuple(
+            f"{name}（{map_id}）" for map_id, name, _x, _y in self.map_locations
+        )
+        self.map_combo = ttk.Combobox(
+            egg_row,
+            values=map_values,
+            state="readonly",
+            width=28,
+        )
+        self.map_combo.grid(
+            row=1, column=3, sticky="w", padx=(24, 0), pady=(4, 0)
+        )
+        if map_values:
+            self.map_combo.current(0)
+        self.teleport_button = ttk.Button(
+            egg_row,
+            text="传送",
+            style="Accent.TButton",
+            command=self._teleport_to_selected_map,
+        )
+        self.teleport_button.grid(row=0, column=4, rowspan=2, padx=(8, 0))
 
     def _build_prediction_tab(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="等级与转生预测", style="Section.TLabel").pack(
@@ -1691,6 +1718,27 @@ class PetRespecApp:
                 )
             except Exception as exc:
                 self.events.put(("error", ("open_pet_eggs", exc)))
+
+        self._run_worker(work)
+
+    def _teleport_to_selected_map(self) -> None:
+        map_index = self.map_combo.current()
+        if map_index not in range(len(self.map_locations)):
+            messagebox.showerror("输入有误", "请选择地图", parent=self.root)
+            return
+        map_id, name, x, y = self.map_locations[map_index]
+        if not self.connected or self.busy_action:
+            return
+        self._set_busy("teleport", f"正在传送到{name}")
+
+        def work() -> None:
+            try:
+                self.backend.teleport_to_map(map_id, x, y)
+                self.events.put(
+                    ("teleport_completed", f"已发送前往{name}（{map_id}）的传送请求")
+                )
+            except Exception as exc:
+                self.events.put(("error", ("teleport", exc)))
 
         self._run_worker(work)
 
@@ -2814,6 +2862,10 @@ class PetRespecApp:
         )
         self.pet_egg_count_entry.configure(state=egg_state)
         self.open_pet_eggs_button.configure(state=egg_state)
+        self.map_combo.configure(
+            state="readonly" if egg_state == "normal" else "disabled"
+        )
+        self.teleport_button.configure(state=egg_state)
         can_predict_unknown_points = (
             idle
             and self.connected
@@ -2928,6 +2980,9 @@ class PetRespecApp:
             self._set_busy(None, completed_text)
             self._render_pet_list()
             self._render_exp_tree_experience()
+            return
+        if event == "teleport_completed":
+            self._set_busy(None, payload)
             return
         if event == "storage_info":
             request_id, pet = payload

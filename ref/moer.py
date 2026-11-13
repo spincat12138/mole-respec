@@ -4136,14 +4136,8 @@ def _receive_battle_until(session, commands, timeout, deferred_end_packets):
     return parsed, battle_ended
 
 
-def _build_hidden_map_enter_packet(str2, map_id=0x54f7,
-                                   entry_x=0xac, entry_y=0xcf,
-                                   sequence=None):
-    """构造进入隐形怪地图的 1004 请求。
-
-    map_id/entry_x/entry_y 是传送包中的地图和入口坐标；不同隐形怪地图
-    只需要替换这三个配置，不需要复制遇怪逻辑。
-    """
+def _build_map_enter_packet(str2, map_id, entry_x, entry_y, sequence=None):
+    """构造进入指定地图和落点的 1004 请求。"""
     if len(str2) != 4:
         raise ValueError('str2 必须是 4 字节用户标识')
     sequence = random.randint(0, 255) if sequence is None else sequence
@@ -4154,6 +4148,10 @@ def _build_hidden_map_enter_packet(str2, map_id=0x54f7,
                   (entry_x >> 8) & 0xff, entry_x & 0xff,
                   0, 0, (entry_y >> 8) & 0xff, entry_y & 0xff,
                   0, 0, 0, 0])
+
+
+# 兼容旧的隐形怪流程调用方；1004 建包逻辑只保留一份。
+_build_hidden_map_enter_packet = _build_map_enter_packet
 
 
 def _build_walk_packet(str2, start_x, start_y, end_x, end_y, direction,
@@ -4688,7 +4686,7 @@ def battle(s, str2, position, turn_wait, end_wait, login_socket=None, reconnect_
             raise ValueError('未配置隐形怪地图%d的传送和巡回点' % hidden_map_id)
 
         entry_x, entry_y = hidden_route['entry']
-        req = _build_hidden_map_enter_packet(
+        req = _build_map_enter_packet(
             str2, hidden_route['map_id'], entry_x, entry_y)
         s.send(req)
         patrol_start, patrol_target = hidden_route['points']
@@ -4735,7 +4733,7 @@ def battle(s, str2, position, turn_wait, end_wait, login_socket=None, reconnect_
             raise ValueError('未配置隐形怪地图%d的传送和巡回点' % hidden_map_id)
 
         entry_x, entry_y = hidden_route['entry']
-        req = _build_hidden_map_enter_packet(
+        req = _build_map_enter_packet(
             str2, hidden_route['map_id'], entry_x, entry_y)
         s.send(req)
         patrol_start, patrol_target = hidden_route['points']

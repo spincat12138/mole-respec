@@ -218,6 +218,18 @@ class ProtocolBackend:
         game_socket, uid_bytes = self._session()
         self._moer._open_pet_eggs(game_socket, uid_bytes, int(item_id), count)
 
+    def teleport_to_map(self, map_id: int, x: int, y: int) -> None:
+        for value, label in ((map_id, "地图编号"), (x, "横坐标"), (y, "纵坐标")):
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value not in range(0x10000)
+            ):
+                raise ValueError(f"{label}必须是 0 到 65535 之间的整数")
+        game_socket, uid_bytes = self._session()
+        packet = self._moer._build_map_enter_packet(uid_bytes, map_id, x, y)
+        game_socket.sendall(packet)
+
     def reset_pet_attr_points(self, pet_id: int) -> dict[str, object]:
         game_socket, uid_bytes = self._session()
         return self._moer._reset_pet_attr_points(
