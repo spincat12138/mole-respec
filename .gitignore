@@ -13,3 +13,5 @@ ref/index.html
 tools/
 pet_results.db
 test_pet_respec.py
+
+*.exe

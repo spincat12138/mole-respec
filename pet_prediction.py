@@ -14,6 +14,7 @@ from typing import Iterator, Mapping, Sequence
 
 EFFORT_KEYS = ("physique", "strength", "endurance", "quick", "intelligence")
 BATTLE_KEYS = ("hp_max", "attack", "defense", "speed", "mp_max")
+BATTLE_TOLERANCES = (5, 5, 5, 5, 1)
 DATA_DIR = Path(__file__).resolve().parent / "ref"
 
 WEIGHTS = (
@@ -38,6 +39,7 @@ class PredictionScenario:
 @dataclass(frozen=True)
 class PredictionCandidate:
     base: tuple[float, ...]
+    base_wave: tuple[float, ...]
     source_points: tuple[int, ...]
     scenarios: tuple[PredictionScenario, ...]
     paths: int
@@ -274,6 +276,7 @@ def predict_pet(
         tuple[
             int,
             tuple[float, ...],
+            tuple[float, ...],
             tuple[int, ...],
             tuple[PredictionScenario, ...],
         ],
@@ -292,8 +295,17 @@ def predict_pet(
         basis, growth, allowed_tenths
     ):
         base = tuple(value / 10 for value in tenths)
+        base_wave = tuple(
+            round(base[index] - basis.base[index], 7) for index in range(5)
+        )
         current = scenario(base, level, rebirth, points)
-        if current.efforts != efforts or current.battle != observed_battle:
+        battle_matches = all(
+            abs(calculated - observed) <= tolerance
+            for calculated, observed, tolerance in zip(
+                current.battle, observed_battle, BATTLE_TOLERANCES
+            )
+        )
+        if current.efforts != efforts or not battle_matches:
             continue
 
         one = scenario(base, 1, 0, (0, 0, 0, 0, 0))
@@ -308,24 +320,28 @@ def predict_pet(
         )
         previous = outputs.get(key)
         if previous is None:
-            outputs[key] = (paths, base, points, projected)
+            outputs[key] = (paths, base, base_wave, points, projected)
         else:
             outputs[key] = (
                 previous[0] + paths,
                 previous[1],
                 previous[2],
                 previous[3],
+                previous[4],
             )
 
     if not outputs:
-        raise ValueError("基数库中未找到与当前十项完全一致的候选")
+        raise ValueError(
+            "基数库中未找到努力值精确一致且战斗值处于网页容差内的候选"
+        )
     ranked = sorted(outputs.values(), key=lambda item: item[0], reverse=True)
     candidates = tuple(
-        PredictionCandidate(base, points, projected, paths)
-        for paths, base, points, projected in ranked
+        PredictionCandidate(base, base_wave, points, projected, paths)
+        for paths, base, base_wave, points, projected in ranked
     )
     note = (
-        f"已按成长 {growth} 和手动自由加点搜索，当前十项与 V14 规则完全一致；"
+        f"已按成长 {growth} 和手动自由加点搜索，当前努力值精确一致，"
+        "战斗值采用网页容差（前四项 +/-5、魔力 +/-1）；"
         f"共 {len(candidates)} 套候选，已全部列出"
     )
     return PetPrediction(candidates, note)

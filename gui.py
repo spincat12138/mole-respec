@@ -741,7 +741,7 @@ class PetRespecApp:
             state="disabled",
         )
         self.prediction_calculate_button.pack(side="left", padx=(3, 0))
-        self.prediction_base_var = tk.StringVar(value="十项完全一致的 0 转基数：-")
+        self.prediction_base_var = tk.StringVar(value="符合网页容差的 0 转基数：-")
         ttk.Label(
             base_box, textvariable=self.prediction_base_var, style="AltBody.TLabel"
         ).pack(anchor="w")
@@ -790,7 +790,7 @@ class PetRespecApp:
 
         ttk.Label(
             parent,
-            text="预测口径与 V14 规则一致：使用手动填写的五项自由加点，从任意等级和转生次数搜索基数，当前五项努力值与五项战斗值必须全部完全一致。",
+            text="预测口径与 V14 网页一致：使用手动填写的五项自由加点，从任意等级和转生次数搜索基数；五项努力值必须完全一致，战斗值前四项允许 +/-5、魔力允许 +/-1。",
             style="Muted.TLabel",
             wraplength=760,
         ).pack(anchor="w", pady=(12, 0))
@@ -1906,7 +1906,7 @@ class PetRespecApp:
             self.prediction_intro_var.set(
                 "选择宠物后，自动按默认成长和全力加点计算预测"
             )
-            self.prediction_base_var.set("十项完全一致的 0 转基数：-")
+            self.prediction_base_var.set("符合网页容差的 0 转基数：-")
             self.prediction_fit_var.set("")
             self._clear_prediction_candidates()
             return
@@ -2051,7 +2051,7 @@ class PetRespecApp:
     ) -> None:
         if cached.error is not None:
             self.prediction_intro_var.set(f"暂时无法预测：{cached.error}")
-            self.prediction_base_var.set("十项完全一致的 0 转基数：-")
+            self.prediction_base_var.set("符合网页容差的 0 转基数：-")
             self.prediction_fit_var.set(
                 f"当前已分配点数：{pet['attr_point_applied']}；点击重新计算可更新缓存"
             )
@@ -2067,7 +2067,7 @@ class PetRespecApp:
             f"成长 {growth}（{cached.growth_source}）"
         )
         self.prediction_base_var.set(
-            f"十项完全一致候选：{prediction.candidate_count} 套（已按网页权重排序）"
+            f"符合网页容差的候选：{prediction.candidate_count} 套（已按网页权重排序）"
         )
         self.prediction_fit_var.set(
             f"{prediction.note}；结果已缓存，点击重新计算可更新"
@@ -2077,7 +2077,10 @@ class PetRespecApp:
         effort_labels = ("体力", "力量", "耐力", "敏捷", "智力")
         battle_labels = ("生命", "攻击", "防御", "速度", "魔力")
         for candidate_index, candidate in enumerate(prediction.candidates, start=1):
-            base_text = " / ".join(f"{value:g}" for value in candidate.base)
+            base_text = " / ".join(
+                f"{value:g}（{wave:+g}）" if wave else f"{value:g}（0）"
+                for value, wave in zip(candidate.base, candidate.base_wave)
+            )
             points_text = " / ".join(str(value) for value in candidate.source_points)
             section = ttk.Frame(self.prediction_content, style="Surface.TFrame")
             section.pack(fill="x", pady=(0, 8))
@@ -2095,8 +2098,13 @@ class PetRespecApp:
             ).pack(side="right")
             ttk.Label(
                 section,
+                text=f"0转基数（体/力/耐/敏/智）：{base_text}",
+                style="Muted.TLabel",
+            ).pack(anchor="w", pady=(0, 4))
+            ttk.Label(
+                section,
                 text=(
-                    f"0转基数：{base_text}    "
+                    "括号内为相对基础基数浮动；"
                     f"当前自由加点（体/力/耐/敏/智）：{points_text}"
                 ),
                 style="Muted.TLabel",
