@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import product
 from math import ceil, floor, isfinite
 from pathlib import Path
-from typing import Iterator, Mapping, Sequence
+from typing import Callable, Iterator, Mapping, Sequence
 
 
 EFFORT_KEYS = ("physique", "strength", "endurance", "quick", "intelligence")
@@ -68,6 +68,18 @@ class PetPrediction:
 
 
 @dataclass(frozen=True)
+class UnknownPointPrediction:
+    prediction: PetPrediction
+    source_points: tuple[int, ...]
+    reset_pet: Mapping[str, object]
+    restored_pet: Mapping[str, object]
+
+
+class PetPointRestoreError(RuntimeError):
+    """Raised when an unknown-point prediction cannot restore the pet."""
+
+
+@dataclass(frozen=True)
 class PetBasis:
     key: str
     name: str
@@ -120,6 +132,83 @@ def find_pet_basis(name: str, server: str) -> PetBasis:
     except KeyError as exc:
         server_label = "活动服" if server == "active" else "普通服"
         raise LookupError(f"基数库中没有{server_label}宠物“{name}”") from exc
+
+
+def infer_allocated_points(
+    original_pet: Mapping[str, object],
+    reset_pet: Mapping[str, object],
+) -> tuple[int, ...]:
+    """Infer free allocations from effort values before and after a reset."""
+    if int(original_pet["pet_id"]) != int(reset_pet["pet_id"]):
+        raise ValueError("重置前后的宠物 ID 不一致")
+    points = tuple(
+        int(original_pet[key]) - int(reset_pet[key]) for key in EFFORT_KEYS
+    )
+    if any(value < 0 for value in points):
+        raise ValueError("重置后的努力值高于原努力值，无法反推自由加点")
+    applied = int(original_pet["attr_point_applied"])
+    if sum(points) != applied:
+        raise ValueError(
+            f"反推自由加点合计 {sum(points)} 与已分配点数 {applied} 不一致"
+        )
+    if int(reset_pet["attr_point_applied"]) != 0:
+        raise ValueError("宠物重置后仍存在已分配自由点")
+    return points
+
+
+def predict_pet_with_unknown_points(
+    pet: Mapping[str, object],
+    basis: PetBasis,
+    target_growth: int,
+    reset_points: Callable[[int], Mapping[str, object]],
+    allocate_points: Callable[[int, tuple[int, ...]], Mapping[str, object]],
+) -> UnknownPointPrediction:
+    """Reset, predict from the reset panel, then restore the original points."""
+    pet_id = int(pet["pet_id"])
+    original_efforts = tuple(int(pet[key]) for key in EFFORT_KEYS)
+    reset_pet = dict(reset_points(pet_id))
+    raw_points = tuple(
+        original_efforts[index] - int(reset_pet[key])
+        for index, key in enumerate(EFFORT_KEYS)
+    )
+
+    try:
+        source_points = infer_allocated_points(pet, reset_pet)
+        reset_prediction = predict_pet(
+            reset_pet,
+            basis,
+            (0, 0, 0, 0, 0),
+            target_growth,
+        )
+        prediction = replace(
+            reset_prediction,
+            candidates=tuple(
+                replace(candidate, source_points=source_points)
+                for candidate in reset_prediction.candidates
+            ),
+            note=f"已反推出当前自由加点；{reset_prediction.note}",
+        )
+    finally:
+        try:
+            restored_pet = dict(allocate_points(pet_id, raw_points))
+        except Exception as exc:
+            raise PetPointRestoreError(
+                "宠物自由点已重置，但恢复原加点失败；请勿继续操作并重新连接检查宠物状态："
+                f"{exc}"
+            ) from exc
+        restored_efforts = tuple(int(restored_pet[key]) for key in EFFORT_KEYS)
+        if restored_efforts != original_efforts:
+            raise PetPointRestoreError(
+                "恢复加点后的五项努力值与操作前不一致："
+                f"期望 {original_efforts}，实际 {restored_efforts}"
+            )
+
+    return UnknownPointPrediction(
+        prediction=prediction,
+        source_points=source_points,
+        reset_pet=reset_pet,
+        restored_pet=restored_pet,
+    )
 
 
 def apply_basis_wave(

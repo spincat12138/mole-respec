@@ -45,6 +45,8 @@ _PET_RELEASE_COMMAND = 1561
 _EXP_TREE_COMMAND = 2000
 _PET_AUTO_ALLOCATE_ATTR_POINTS_COMMAND = 1603
 _MAX_EXP_PER_PACKET = 999999
+_EXPERIENCE_BOOK_ID = 350050
+_EXPERIENCE_PER_BOOK = 99999
 _ZERO_99_TARGET_EXP = 60796450
 _OPEN_PET_EGG_COMMAND = 1130
 _ATTR_NAMES = ('体力', '力量', '耐力', '敏捷', '智力')
@@ -1732,15 +1734,64 @@ def _require_exp_tree_experience(s, str2, required):
     return available
 
 
-def _allocate_pet_experience(s, str2, pet_id, experience):
+def _validate_pet_experience(experience):
     if not isinstance(experience, int) or isinstance(experience, bool):
         raise ValueError('分配经验必须是正整数')
     if experience <= 0 or experience > 0xFFFFFFFF:
         raise ValueError('分配经验必须在1到4294967295之间')
+
+
+def _pet_rebirth_stage_experience(pet):
+    rebirth = pet['reincarnation_degree']
+    if rebirth > 10:
+        raise ValueError('宠物转生次数超过10，无法继续分配经验')
+    stages = [(
+        rebirth,
+        max(0, jsexp(rebirth, 0) - pet['experience']),
+    )]
+    stages.extend(
+        (stage, jsexp(stage, 0))
+        for stage in range(rebirth + 1, 11)
+    )
+    return stages
+
+
+def _allocate_pet_experience(s, str2, pet_id, experience):
+    _validate_pet_experience(experience)
     pet = _get_bag_pet_by_id(s, str2, pet_id)
     _require_exp_tree_experience(s, str2, experience)
     _send_pet_experience(s, str2, pet['pet_id_bytes'], experience)
     _auto_allocate_pet_attr_points(s, str2, pet['pet_id_bytes'])
+
+
+def _allocate_all_pet_experience(s, str2, pet_id):
+    """向指定宠物分配经验树全部经验，达标时自动转生。"""
+    pet = _get_bag_pet_by_id(s, str2, pet_id)
+    stage_experience = _pet_rebirth_stage_experience(pet)
+    required_to_max = sum(required for _stage, required in stage_experience)
+    if required_to_max <= 0:
+        raise ValueError('所选宠物已达到10转99级')
+    available = _get_exp_tree_experience(s, str2)
+    if available <= 0:
+        raise ValueError('经验树没有可分配经验')
+    experience = min(available, required_to_max)
+
+    remaining = experience
+    for stage, required in stage_experience:
+        allocated = min(remaining, required)
+        if allocated > 0:
+            _send_pet_experience(
+                s, str2, pet['pet_id_bytes'], allocated)
+            remaining -= allocated
+        if allocated < required:
+            break
+        if stage < 10:
+            zs(pet['pet_id_bytes'], str2, s)
+        if remaining == 0:
+            break
+
+    _auto_allocate_pet_attr_points(s, str2, pet['pet_id_bytes'])
+    return experience
 
 
 def _upgrade_pet_to_zero_99(s, str2, pet_id):
@@ -1758,16 +1809,7 @@ def _upgrade_pet_to_zero_99(s, str2, pet_id):
 def _upgrade_pet_to_ten_99(s, str2, pet_id):
     pet = _get_bag_pet_by_id(s, str2, pet_id)
     rebirth = pet['reincarnation_degree']
-    if rebirth > 10:
-        raise ValueError('宠物转生次数超过10，无法执行一键升级')
-
-    stage_experience = []
-    current_required = max(0, jsexp(rebirth, 0) - pet['experience'])
-    stage_experience.append((rebirth, current_required))
-    stage_experience.extend(
-        (stage, jsexp(stage, 0))
-        for stage in range(rebirth + 1, 11)
-    )
+    stage_experience = _pet_rebirth_stage_experience(pet)
     required = sum(experience for _stage, experience in stage_experience)
     if required == 0 or (rebirth == 10 and pet['level'] >= 99):
         raise ValueError('所选宠物已达到10转99级')
@@ -1778,6 +1820,26 @@ def _upgrade_pet_to_ten_99(s, str2, pet_id):
         if stage < 10:
             zs(pet['pet_id_bytes'], str2, s)
     _auto_allocate_pet_attr_points(s, str2, pet['pet_id_bytes'])
+
+
+def _upgrade_pet_to_ten_99_with_books(s, str2, pet_id):
+    """补足经验树缺口后，将指定宠物升至10转99级。"""
+    pet = _get_bag_pet_by_id(s, str2, pet_id)
+    stage_experience = _pet_rebirth_stage_experience(pet)
+    required = sum(experience for _stage, experience in stage_experience)
+    if required <= 0:
+        raise ValueError('所选宠物已达到10转99级')
+
+    available_experience = _get_exp_tree_experience(s, str2)
+    deficit = max(0, required - available_experience)
+    book_count = (
+        deficit + _EXPERIENCE_PER_BOOK - 1
+    ) // _EXPERIENCE_PER_BOOK
+    if book_count > 0:
+        openbook(s, str2, book_count)
+
+    _upgrade_pet_to_ten_99(s, str2, pet_id)
+    return book_count
 
 
 def zs(pet, uid, s):
@@ -2815,7 +2877,25 @@ def openbook(s, str2, count=None):
         count = int(input('请输入开启数量'))
     if count <= 0:
         raise ValueError('使用数量必须大于0')
-    _fetch_item_from_store(s, str2, 350050, count)
+    bag_items, _ = _get_prop_bag_info(s, str2)
+    store_items, _ = _get_prop_store_info(s, str2)
+    bag_quantity = sum(
+        item['quantity'] for item in bag_items
+        if item['item_id'] == _EXPERIENCE_BOOK_ID
+    )
+    store_quantity = sum(
+        item['quantity'] for item in store_items
+        if item['item_id'] == _EXPERIENCE_BOOK_ID
+    )
+    available = bag_quantity + store_quantity
+    if count > available:
+        raise ValueError(
+            '经验书数量不足：需要%d，背包%d，仓库%d，合计%d' %
+            (count, bag_quantity, store_quantity, available))
+    store_fetch_quantity = max(0, count - bag_quantity)
+    if store_fetch_quantity > 0:
+        _fetch_item_from_store(
+            s, str2, _EXPERIENCE_BOOK_ID, store_fetch_quantity)
     for i in range(count):
         s.send(req)
         if i % 100 == 0:
@@ -2948,6 +3028,46 @@ def _parse_pet_attr_points_response(packet, expected_command):
     return pet
 
 
+def _reset_pet_attr_points(s, str2, pet_id):
+    """重置指定宠物的自由加点，并返回服务端回传的完整 PetInfo。"""
+    pet_id = int(pet_id)
+    reset_payload = struct.pack(
+        '>II', pet_id, _PET_RESET_ATTR_POINTS_ITEM_ID)
+    reset_packet = _send_tmf_request(
+        s, str2, _PET_RESET_ATTR_POINTS_COMMAND, reset_payload)
+    reset_pet = _parse_pet_attr_points_response(
+        reset_packet, _PET_RESET_ATTR_POINTS_COMMAND)
+    if reset_pet['pet_id'] != pet_id:
+        raise RuntimeError(
+            '1565回包宠物ID不匹配（期望%d，实际%d）' %
+            (pet_id, reset_pet['pet_id']))
+    return reset_pet
+
+
+def _allocate_pet_attr_points(s, str2, pet_id, points):
+    """为指定宠物分配五项自由点，并返回服务端回传的完整 PetInfo。"""
+    pet_id = int(pet_id)
+    points = tuple(points)
+    if len(points) != len(_ATTR_NAMES):
+        raise ValueError('宠物自由加点必须包含五项')
+    if any(not isinstance(value, int) or isinstance(value, bool)
+           for value in points):
+        raise ValueError('宠物自由加点必须全部是整数')
+    if any(value < 0 or value > 0xffff for value in points):
+        raise ValueError('宠物每项自由加点必须在0到65535之间')
+
+    allocate_payload = struct.pack('>I5H', pet_id, *points)
+    allocate_packet = _send_tmf_request(
+        s, str2, _PET_ALLOCATE_ATTR_POINTS_COMMAND, allocate_payload)
+    result_pet = _parse_pet_attr_points_response(
+        allocate_packet, _PET_ALLOCATE_ATTR_POINTS_COMMAND)
+    if result_pet['pet_id'] != pet_id:
+        raise RuntimeError(
+            '1606回包宠物ID不匹配（期望%d，实际%d）' %
+            (pet_id, result_pet['pet_id']))
+    return result_pet
+
+
 def _prompt_attr_points(subject, max_value, max_total=None):
     while True:
         raw_value = input(
@@ -3066,22 +3186,11 @@ def _reset_and_allocate_pet_attr_points(s, str2):
     points = _prompt_attr_points(
         '宠物', 0xffff, max_total=expected_total)
     pet_id = selected_pet['pet_id']
-    reset_payload = struct.pack(
-        '>II', pet_id, _PET_RESET_ATTR_POINTS_ITEM_ID)
-
     try:
-        reset_packet = _send_tmf_request(
-            s, str2, _PET_RESET_ATTR_POINTS_COMMAND, reset_payload)
-        reset_pet = _parse_pet_attr_points_response(
-            reset_packet, _PET_RESET_ATTR_POINTS_COMMAND)
+        reset_pet = _reset_pet_attr_points(s, str2, pet_id)
     except (socket.timeout, ConnectionError, OSError, ValueError,
             RuntimeError) as exc:
         print('宠物“%s”洗点失败：%s' % (selected_pet['nick'], exc))
-        return
-
-    if reset_pet['pet_id'] != pet_id:
-        print('宠物洗点失败：1565回包宠物ID不匹配（期望%d，实际%d）' %
-              (pet_id, reset_pet['pet_id']))
         return
 
     remain_points = reset_pet['attr_point_remaid']
@@ -3092,23 +3201,12 @@ def _reset_and_allocate_pet_attr_points(s, str2):
         points = _prompt_attr_points(
             '宠物', 0xffff, max_total=remain_points)
 
-    # 反编译客户端以 ByteArray 写入 petId:uint32 + 5 个 uint16。
-    allocate_payload = struct.pack('>I5H', pet_id, *points)
     try:
-        allocate_packet = _send_tmf_request(
-            s, str2, _PET_ALLOCATE_ATTR_POINTS_COMMAND,
-            allocate_payload)
-        result_pet = _parse_pet_attr_points_response(
-            allocate_packet, _PET_ALLOCATE_ATTR_POINTS_COMMAND)
+        result_pet = _allocate_pet_attr_points(s, str2, pet_id, points)
     except (socket.timeout, ConnectionError, OSError, ValueError,
             RuntimeError) as exc:
         print('宠物“%s”洗点已成功，但加点失败：%s' %
               (reset_pet['nick'], exc))
-        return
-
-    if result_pet['pet_id'] != pet_id:
-        print('宠物加点失败：1606回包宠物ID不匹配（期望%d，实际%d）' %
-              (pet_id, result_pet['pet_id']))
         return
 
     attrs = '，'.join(

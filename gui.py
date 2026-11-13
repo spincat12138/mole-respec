@@ -7,7 +7,7 @@ import threading
 import tkinter as tk
 from dataclasses import dataclass
 from tkinter import messagebox, ttk
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from pet_respec import (
     BASE_FIELDS,
@@ -26,6 +26,7 @@ from pet_prediction import (
     apply_basis_wave,
     find_pet_basis,
     predict_pet,
+    predict_pet_with_unknown_points,
     round_display,
     scenario,
     simulate_base,
@@ -604,6 +605,15 @@ class PetRespecApp:
             command=self._use_experience_books,
         )
         self.use_book_button.grid(row=0, column=2, rowspan=2)
+        self.upgrade_ten_99_with_books_button = ttk.Button(
+            book_row,
+            text="一键升级10转99级",
+            style="Tool.TButton",
+            command=self._upgrade_selected_pet_to_ten_99_with_books,
+        )
+        self.upgrade_ten_99_with_books_button.grid(
+            row=0, column=3, rowspan=2, padx=(8, 0)
+        )
         self.book_count_entry.bind(
             "<Return>", lambda _event: self._use_experience_books()
         )
@@ -627,27 +637,27 @@ class PetRespecApp:
         self.pet_experience_entry.grid(row=0, column=1, rowspan=2, padx=(12, 8))
         self.allocate_experience_button = ttk.Button(
             experience_row,
-            text="分配经验",
+            text="分配经验（不转生）",
             style="Accent.TButton",
             command=self._allocate_pet_experience,
         )
         self.allocate_experience_button.grid(row=0, column=2, rowspan=2)
         self.upgrade_zero_99_button = ttk.Button(
             experience_row,
-            text="一键升级099",
+            text="升级0转99级",
             style="Tool.TButton",
-            command=lambda: self._upgrade_selected_pet("zero_99"),
+            command=self._upgrade_selected_pet_to_zero_99,
         )
         self.upgrade_zero_99_button.grid(
             row=0, column=3, rowspan=2, padx=(8, 0)
         )
-        self.upgrade_ten_99_button = ttk.Button(
+        self.allocate_all_experience_button = ttk.Button(
             experience_row,
-            text="一键升级1099",
-            style="Tool.TButton",
-            command=lambda: self._upgrade_selected_pet("ten_99"),
+            text="一键分配经验",
+            style="Accent.TButton",
+            command=self._allocate_all_pet_experience,
         )
-        self.upgrade_ten_99_button.grid(
+        self.allocate_all_experience_button.grid(
             row=0, column=4, rowspan=2, padx=(8, 0)
         )
         self.pet_experience_entry.bind(
@@ -741,6 +751,14 @@ class PetRespecApp:
             state="disabled",
         )
         self.prediction_calculate_button.pack(side="left", padx=(3, 0))
+        self.prediction_unknown_button = ttk.Button(
+            points_row,
+            text="未知加点预测",
+            style="Tool.TButton",
+            command=self._calculate_unknown_point_prediction,
+            state="disabled",
+        )
+        self.prediction_unknown_button.pack(side="left", padx=(7, 0))
         self.prediction_base_var = tk.StringVar(value="符合网页容差的 0 转基数：-")
         ttk.Label(
             base_box, textvariable=self.prediction_base_var, style="AltBody.TLabel"
@@ -1538,42 +1556,64 @@ class PetRespecApp:
         pet_name = str(self.selected_pet["nick"])
         self._run_exp_action(
             "allocate_pet_experience",
-            f"正在向 {pet_name} 分配 {experience} 经验",
+            f"正在向 {pet_name} 分配 {experience} 经验（不转生）",
             lambda: self.backend.allocate_pet_experience(pet_id, experience),
-            f"已向 {pet_name} 分配 {experience} 经验并自动加点",
+            f"已向 {pet_name} 分配 {experience} 经验（不转生）并自动加点",
             pet_id,
         )
 
-    def _upgrade_selected_pet(self, target: str) -> None:
+    def _allocate_all_pet_experience(self) -> None:
         if self.selected_pet is None:
             return
         pet_id = int(self.selected_pet["pet_id"])
         pet_name = str(self.selected_pet["nick"])
-        if target == "zero_99":
-            operation = lambda: self.backend.upgrade_pet_to_zero_99(pet_id)
-            target_text = "0转99级"
-            action = "upgrade_pet_zero_99"
-        elif target == "ten_99":
-            operation = lambda: self.backend.upgrade_pet_to_ten_99(pet_id)
-            target_text = "10转99级"
-            action = "upgrade_pet_ten_99"
-        else:
-            raise ValueError(f"未知升级目标：{target}")
         self._run_exp_action(
-            action,
-            f"正在将 {pet_name} 升级到{target_text}",
-            operation,
-            f"已将 {pet_name} 升级到{target_text}并自动加点",
+            "allocate_all_pet_experience",
+            f"正在向 {pet_name} 分配经验树全部经验",
+            lambda: self.backend.allocate_all_pet_experience(pet_id),
+            f"已为 {pet_name} 一键分配经验，达标时自动转生并加点",
             pet_id,
+        )
+
+    def _upgrade_selected_pet_to_zero_99(self) -> None:
+        if self.selected_pet is None:
+            return
+        pet_id = int(self.selected_pet["pet_id"])
+        pet_name = str(self.selected_pet["nick"])
+        self._run_exp_action(
+            "upgrade_pet_zero_99",
+            f"正在将 {pet_name} 升级到0转99级",
+            lambda: self.backend.upgrade_pet_to_zero_99(pet_id),
+            f"已将 {pet_name} 升级到0转99级并自动加点",
+            pet_id,
+        )
+
+    def _upgrade_selected_pet_to_ten_99_with_books(self) -> None:
+        if self.selected_pet is None:
+            return
+        pet_id = int(self.selected_pet["pet_id"])
+        pet_name = str(self.selected_pet["nick"])
+        self._run_exp_action(
+            "upgrade_pet_ten_99_with_books",
+            f"正在按经验缺口使用经验书并将 {pet_name} 升级到10转99级",
+            lambda: self.backend.upgrade_pet_to_ten_99_with_books(pet_id),
+            lambda book_count: (
+                f"已使用 {book_count} 本经验书并将 {pet_name} 升级到10转99级"
+                if book_count
+                else f"经验树经验已足够，未使用经验书；已将 {pet_name} 升级到10转99级"
+            ),
+            pet_id,
+            refresh_misc=True,
         )
 
     def _run_exp_action(
         self,
         action: str,
         pending_text: str,
-        operation: Any,
-        completed_text: str,
+        operation: Callable[[], Any],
+        completed_text: str | Callable[[Any], str],
         pet_id: int,
+        refresh_misc: bool = False,
     ) -> None:
         if not self.connected or self.busy_action:
             return
@@ -1581,17 +1621,28 @@ class PetRespecApp:
 
         def work() -> None:
             try:
-                operation()
+                operation_result = operation()
+                completion = (
+                    completed_text(operation_result)
+                    if callable(completed_text)
+                    else completed_text
+                )
                 bag_pets = self.backend.load_pets()
                 exp_tree_experience = self.backend.load_exp_tree_experience()
+                misc_quantities = (
+                    self.backend.load_misc_item_quantities()
+                    if refresh_misc
+                    else None
+                )
                 self.events.put(
                     (
                         "exp_completed",
                         (
-                            completed_text,
+                            completion,
                             pet_id,
                             bag_pets,
                             exp_tree_experience,
+                            misc_quantities,
                         ),
                     )
                 )
@@ -1991,30 +2042,7 @@ class PetRespecApp:
                     points = tuple(int(value) for value in point_texts)
                 except ValueError as exc:
                     raise ValueError("五项自由加点必须是整数") from exc
-            type_name = self.backend.pet_type_name(int(pet["type_id"]))
-            server = "active" if self.backend.server >= 11 else "normal"
-            basis = find_pet_basis(type_name, server)
-            if int(pet["reincarnation_degree"]) == 0:
-                default_growth = int(pet["grow_value"])
-                default_growth_source = "宠物当前成长"
-            else:
-                default_growth = round_display(basis.growth)
-                default_growth_source = "基数库默认成长"
-            growth_text = self.prediction_growth_var.get().strip()
-            if growth_text:
-                try:
-                    growth = int(growth_text)
-                except ValueError as exc:
-                    raise ValueError("成长必须是整数") from exc
-                growth_source = (
-                    default_growth_source
-                    if growth == default_growth
-                    else "手动成长"
-                )
-            else:
-                growth = default_growth
-                self.prediction_growth_var.set(str(growth))
-                growth_source = default_growth_source
+            basis, growth, growth_source = self._prediction_basis_and_growth(pet)
             prediction = predict_pet(pet, basis, points, growth)
         except (KeyError, LookupError, OSError, TypeError, ValueError) as exc:
             cached = PredictionCacheEntry(
@@ -2043,6 +2071,84 @@ class PetRespecApp:
         )
         self.prediction_cache[cache_key] = cached
         self._display_prediction_cache(pet, cached)
+
+    def _prediction_basis_and_growth(
+        self,
+        pet: Mapping[str, object],
+    ) -> tuple[PetBasis, int, str]:
+        type_name = self.backend.pet_type_name(int(pet["type_id"]))
+        server = "active" if self.backend.server >= 11 else "normal"
+        basis = find_pet_basis(type_name, server)
+        if int(pet["reincarnation_degree"]) == 0:
+            default_growth = int(pet["grow_value"])
+            default_growth_source = "宠物当前成长"
+        else:
+            default_growth = round_display(basis.growth)
+            default_growth_source = "基数库默认成长"
+        growth_text = self.prediction_growth_var.get().strip()
+        if growth_text:
+            try:
+                growth = int(growth_text)
+            except ValueError as exc:
+                raise ValueError("成长必须是整数") from exc
+            growth_source = (
+                default_growth_source
+                if growth == default_growth
+                else "手动成长"
+            )
+        else:
+            growth = default_growth
+            self.prediction_growth_var.set(str(growth))
+            growth_source = default_growth_source
+        return basis, growth, growth_source
+
+    def _calculate_unknown_point_prediction(self) -> None:
+        pet = self.selected_pet
+        if not self.connected or self.busy_action or pet is None:
+            return
+        try:
+            if int(pet["attr_point_applied"]) <= 0:
+                raise ValueError("当前宠物没有已分配的自由点，无需重置预测")
+            basis, growth, growth_source = self._prediction_basis_and_growth(pet)
+        except (KeyError, LookupError, OSError, TypeError, ValueError) as exc:
+            messagebox.showerror("无法预测", str(exc), parent=self.root)
+            return
+
+        original_pet = dict(pet)
+        pet_id = int(original_pet["pet_id"])
+        cache_key = self._prediction_cache_key(original_pet)
+        self._set_busy(
+            "unknown_point_prediction",
+            f"正在重置 {original_pet['nick']} 的自由点并预测，完成后会自动恢复",
+        )
+
+        def work() -> None:
+            try:
+                result = predict_pet_with_unknown_points(
+                    original_pet,
+                    basis,
+                    growth,
+                    self.backend.reset_pet_attr_points,
+                    self.backend.allocate_pet_attr_points,
+                )
+                cached = PredictionCacheEntry(
+                    point_values=tuple(str(value) for value in result.source_points),
+                    growth_value=str(growth),
+                    growth=growth,
+                    growth_source=growth_source,
+                    prediction=result.prediction,
+                    error=None,
+                )
+                self.events.put(
+                    (
+                        "unknown_prediction_completed",
+                        (cache_key, pet_id, cached, dict(result.restored_pet)),
+                    )
+                )
+            except Exception as exc:
+                self.events.put(("error", ("unknown_point_prediction", exc)))
+
+        self._run_worker(work)
 
     def _display_prediction_cache(
         self,
@@ -2566,6 +2672,22 @@ class PetRespecApp:
             else "disabled"
         )
         selected_pet = self.selected_pet
+        can_upgrade_ten_99_with_books = (
+            idle
+            and self.connected
+            and selected_pet is not None
+            and not (
+                int(selected_pet["reincarnation_degree"]) == 10
+                and int(selected_pet["level"]) >= 99
+            )
+            and (
+                bool(self.exp_tree_experience)
+                or self._misc_total(EXPERIENCE_BOOK_ID) >= 1
+            )
+        )
+        self.upgrade_ten_99_with_books_button.configure(
+            state="normal" if can_upgrade_ten_99_with_books else "disabled"
+        )
         can_allocate_exp = (
             idle
             and self.connected
@@ -2578,6 +2700,16 @@ class PetRespecApp:
         self.allocate_experience_button.configure(
             state="normal" if can_allocate_exp else "disabled"
         )
+        can_allocate_all_exp = (
+            can_allocate_exp
+            and not (
+                int(selected_pet["reincarnation_degree"]) == 10
+                and int(selected_pet["level"]) >= 99
+            )
+        )
+        self.allocate_all_experience_button.configure(
+            state="normal" if can_allocate_all_exp else "disabled"
+        )
         can_upgrade_zero_99 = (
             can_allocate_exp
             and int(selected_pet["reincarnation_degree"]) == 0
@@ -2586,22 +2718,24 @@ class PetRespecApp:
         self.upgrade_zero_99_button.configure(
             state="normal" if can_upgrade_zero_99 else "disabled"
         )
-        can_upgrade_ten_99 = (
-            can_allocate_exp
-            and not (
-                int(selected_pet["reincarnation_degree"]) == 10
-                and int(selected_pet["level"]) >= 99
-            )
-        )
-        self.upgrade_ten_99_button.configure(
-            state="normal" if can_upgrade_ten_99 else "disabled"
-        )
         egg_state = "normal" if idle and self.connected else "disabled"
         self.pet_egg_combo.configure(
             state="readonly" if egg_state == "normal" else "disabled"
         )
         self.pet_egg_count_entry.configure(state=egg_state)
         self.open_pet_eggs_button.configure(state=egg_state)
+        can_predict_unknown_points = (
+            idle
+            and self.connected
+            and self.selected_pet is not None
+            and self.prediction_pet is not None
+            and int(self.selected_pet["pet_id"])
+            == int(self.prediction_pet["pet_id"])
+            and int(self.selected_pet["attr_point_applied"]) > 0
+        )
+        self.prediction_unknown_button.configure(
+            state="normal" if can_predict_unknown_points else "disabled"
+        )
 
     def _poll_events(self) -> None:
         try:
@@ -2680,12 +2814,22 @@ class PetRespecApp:
             self._render_exp_tree_experience()
             return
         if event == "exp_completed":
-            completed_text, pet_id, bag_pets, exp_tree_experience = payload
+            (
+                completed_text,
+                pet_id,
+                bag_pets,
+                exp_tree_experience,
+                misc_quantities,
+            ) = payload
             self.bag_pets = bag_pets
             self.exp_tree_experience = exp_tree_experience
+            if misc_quantities is not None:
+                self.misc_item_quantities = misc_quantities
             self._set_busy(None, completed_text)
             self._render_pet_list(preferred_pet_id=pet_id)
             self._render_exp_tree_experience()
+            if misc_quantities is not None:
+                self._render_misc_quantities()
             return
         if event == "pet_eggs_opened":
             completed_text, bag_pets, exp_tree_experience = payload
@@ -2705,6 +2849,19 @@ class PetRespecApp:
                     break
             self._set_busy(None, "仓库宠物详细属性读取完成")
             self._show_storage_detail(pet)
+            return
+        if event == "unknown_prediction_completed":
+            cache_key, pet_id, cached, restored_pet = payload
+            self.prediction_cache[cache_key] = cached
+            self.bag_pets = [
+                restored_pet if int(pet["pet_id"]) == pet_id else pet
+                for pet in self.bag_pets
+            ]
+            self._set_busy(
+                None,
+                f"未知加点预测完成，{restored_pet['nick']} 的原自由加点已恢复",
+            )
+            self._render_pet_list(preferred_pet_id=pet_id)
             return
         if event == "pet_moved":
             action_text, bag_pets, storage_pets, quantities = payload
@@ -2818,6 +2975,13 @@ class PetRespecApp:
         self._sync_controls()
 
     def _on_close(self) -> None:
+        if self.busy_action == "unknown_point_prediction":
+            messagebox.showwarning(
+                "正在恢复宠物加点",
+                "未知加点预测尚未完成，必须等待原自由加点恢复后才能关闭。",
+                parent=self.root,
+            )
+            return
         self.stop_event.set()
         self.backend.close()
         self.root.destroy()

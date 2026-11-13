@@ -170,6 +170,14 @@ class ProtocolBackend:
             game_socket, uid_bytes, int(pet_id), experience
         )
 
+    def allocate_all_pet_experience(self, pet_id: int) -> int:
+        game_socket, uid_bytes = self._session()
+        return int(
+            self._moer._allocate_all_pet_experience(
+                game_socket, uid_bytes, int(pet_id)
+            )
+        )
+
     def upgrade_pet_to_zero_99(self, pet_id: int) -> None:
         game_socket, uid_bytes = self._session()
         self._moer._upgrade_pet_to_zero_99(game_socket, uid_bytes, int(pet_id))
@@ -178,10 +186,34 @@ class ProtocolBackend:
         game_socket, uid_bytes = self._session()
         self._moer._upgrade_pet_to_ten_99(game_socket, uid_bytes, int(pet_id))
 
+    def upgrade_pet_to_ten_99_with_books(self, pet_id: int) -> int:
+        game_socket, uid_bytes = self._session()
+        return int(
+            self._moer._upgrade_pet_to_ten_99_with_books(
+                game_socket, uid_bytes, int(pet_id)
+            )
+        )
+
     def open_pet_eggs(self, item_id: int, count: int) -> None:
         self._validate_positive_count(count)
         game_socket, uid_bytes = self._session()
         self._moer._open_pet_eggs(game_socket, uid_bytes, int(item_id), count)
+
+    def reset_pet_attr_points(self, pet_id: int) -> dict[str, object]:
+        game_socket, uid_bytes = self._session()
+        return self._moer._reset_pet_attr_points(
+            game_socket, uid_bytes, int(pet_id)
+        )
+
+    def allocate_pet_attr_points(
+        self,
+        pet_id: int,
+        points: tuple[int, ...],
+    ) -> dict[str, object]:
+        game_socket, uid_bytes = self._session()
+        return self._moer._allocate_pet_attr_points(
+            game_socket, uid_bytes, int(pet_id), points
+        )
 
     def wash_once(
         self,
