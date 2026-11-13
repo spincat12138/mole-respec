@@ -49,6 +49,7 @@ class PredictionCandidate:
 class PetPrediction:
     candidates: tuple[PredictionCandidate, ...]
     note: str
+    used_tolerance: bool = False
 
     @property
     def base(self) -> tuple[float, ...]:
@@ -360,16 +361,15 @@ def predict_pet(
     base_efforts = tuple(efforts[index] - points[index] for index in range(5))
     if min(base_efforts) < 0:
         raise ValueError("自由加点不能大于当前对应努力值")
-    outputs: dict[
+    CandidateOutput = tuple[
+        int,
+        tuple[float, ...],
+        tuple[float, ...],
         tuple[int, ...],
-        tuple[
-            int,
-            tuple[float, ...],
-            tuple[float, ...],
-            tuple[int, ...],
-            tuple[PredictionScenario, ...],
-        ],
-    ] = {}
+        tuple[PredictionScenario, ...],
+    ]
+    exact_outputs: dict[tuple[int, ...], CandidateOutput] = {}
+    tolerance_outputs: dict[tuple[int, ...], CandidateOutput] = {}
     factor = 0.2 + (level - 1) / 24
     allowed_tenths = tuple(
         _allowed_base_tenths(
@@ -388,13 +388,16 @@ def predict_pet(
             round(base[index] - basis.base[index], 7) for index in range(5)
         )
         current = scenario(base, level, rebirth, points)
-        battle_matches = all(
+        if current.efforts != efforts:
+            continue
+        exact_battle_match = current.battle == observed_battle
+        tolerance_battle_match = all(
             abs(calculated - observed) <= tolerance
             for calculated, observed, tolerance in zip(
                 current.battle, observed_battle, BATTLE_TOLERANCES
             )
         )
-        if current.efforts != efforts or not battle_matches:
+        if not tolerance_battle_match:
             continue
 
         one = scenario(base, 1, 0, (0, 0, 0, 0, 0))
@@ -407,6 +410,7 @@ def predict_pet(
             for values in (item.efforts, item.battle)
             for value in values
         )
+        outputs = exact_outputs if exact_battle_match else tolerance_outputs
         previous = outputs.get(key)
         if previous is None:
             outputs[key] = (paths, base, base_wave, points, projected)
@@ -419,21 +423,29 @@ def predict_pet(
                 previous[4],
             )
 
+    used_tolerance = not exact_outputs
+    outputs = tolerance_outputs if used_tolerance else exact_outputs
     if not outputs:
         raise ValueError(
-            "基数库中未找到努力值精确一致且战斗值处于网页容差内的候选"
+            "基数库中未找到十项完全一致或处于网页容差内的候选"
         )
     ranked = sorted(outputs.values(), key=lambda item: item[0], reverse=True)
     candidates = tuple(
         PredictionCandidate(base, base_wave, points, projected, paths)
         for paths, base, base_wave, points, projected in ranked
     )
+    if used_tolerance:
+        match_note = (
+            "未找到十项完全一致的候选，已使用网页容差"
+            "（前四项 +/-5、魔力 +/-1）"
+        )
+    else:
+        match_note = "当前五项努力值与五项战斗值完全一致"
     note = (
-        f"已按成长 {growth} 和手动自由加点搜索，当前努力值精确一致，"
-        "战斗值采用网页容差（前四项 +/-5、魔力 +/-1）；"
+        f"已按成长 {growth} 和手动自由加点搜索，{match_note}；"
         f"共 {len(candidates)} 套候选，已全部列出"
     )
-    return PetPrediction(candidates, note)
+    return PetPrediction(candidates, note, used_tolerance)
 
 
 def _allowed_base_tenths(

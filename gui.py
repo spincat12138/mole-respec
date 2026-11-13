@@ -759,7 +759,7 @@ class PetRespecApp:
             state="disabled",
         )
         self.prediction_unknown_button.pack(side="left", padx=(7, 0))
-        self.prediction_base_var = tk.StringVar(value="符合网页容差的 0 转基数：-")
+        self.prediction_base_var = tk.StringVar(value="匹配到的 0 转基数：-")
         ttk.Label(
             base_box, textvariable=self.prediction_base_var, style="AltBody.TLabel"
         ).pack(anchor="w")
@@ -808,7 +808,7 @@ class PetRespecApp:
 
         ttk.Label(
             parent,
-            text="预测口径与 V14 网页一致：使用手动填写的五项自由加点，从任意等级和转生次数搜索基数；五项努力值必须完全一致，战斗值前四项允许 +/-5、魔力允许 +/-1。",
+            text="预测优先要求五项努力值与五项战斗值完全一致；仅在无精确结果时，才使用网页容差（战斗值前四项 +/-5、魔力 +/-1），并在结果中明确标注。",
             style="Muted.TLabel",
             wraplength=760,
         ).pack(anchor="w", pady=(12, 0))
@@ -1957,7 +1957,7 @@ class PetRespecApp:
             self.prediction_intro_var.set(
                 "选择宠物后，自动按默认成长和全力加点计算预测"
             )
-            self.prediction_base_var.set("符合网页容差的 0 转基数：-")
+            self.prediction_base_var.set("匹配到的 0 转基数：-")
             self.prediction_fit_var.set("")
             self._clear_prediction_candidates()
             return
@@ -2157,7 +2157,7 @@ class PetRespecApp:
     ) -> None:
         if cached.error is not None:
             self.prediction_intro_var.set(f"暂时无法预测：{cached.error}")
-            self.prediction_base_var.set("符合网页容差的 0 转基数：-")
+            self.prediction_base_var.set("匹配到的 0 转基数：-")
             self.prediction_fit_var.set(
                 f"当前已分配点数：{pet['attr_point_applied']}；点击重新计算可更新缓存"
             )
@@ -2172,8 +2172,9 @@ class PetRespecApp:
             f"{pet['nick']} · 当前 {pet['reincarnation_degree']}转{pet['level']}级 · "
             f"成长 {growth}（{cached.growth_source}）"
         )
+        match_label = "容差候选" if prediction.used_tolerance else "十项完全一致候选"
         self.prediction_base_var.set(
-            f"符合网页容差的候选：{prediction.candidate_count} 套（已按网页权重排序）"
+            f"{match_label}：{prediction.candidate_count} 套（已按网页权重排序）"
         )
         self.prediction_fit_var.set(
             f"{prediction.note}；结果已缓存，点击重新计算可更新"
@@ -2194,7 +2195,11 @@ class PetRespecApp:
             header.pack(fill="x", pady=(0, 4))
             ttk.Label(
                 header,
-                text=f"候选 {candidate_index}",
+                text=(
+                    f"候选 {candidate_index}（容差）"
+                    if prediction.used_tolerance
+                    else f"候选 {candidate_index}"
+                ),
                 style="Section.TLabel",
             ).pack(side="left")
             ttk.Label(
