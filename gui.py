@@ -177,6 +177,7 @@ class PetRespecApp:
         self.pet_by_row: dict[str, dict[str, object]] = {}
         self.storage_pet_by_row: dict[str, dict[str, object]] = {}
         self.selected_pet: dict[str, object] | None = None
+        self.selected_pet_location: str | None = None
         self.remembered_pet_selection: tuple[int, int] | None = None
         self.storage_request_id = 0
         self.item_quantities: dict[int, int] = {}
@@ -1258,7 +1259,6 @@ class PetRespecApp:
             style="Tool.TButton",
             command=self._release_selected_pet,
         )
-        self.release_pet_button.pack(side="left", padx=(8, 0))
 
         pet_overview = ttk.Frame(parent, style="Surface.TFrame")
         pet_overview.pack(fill="x")
@@ -1883,11 +1883,16 @@ class PetRespecApp:
 
         self._run_worker(work)
 
+    def _selected_storage_pet(self) -> dict[str, object] | None:
+        if self.selected_pet_location != "storage":
+            return None
+        selection = self.storage_tree.selection()
+        return self.storage_pet_by_row.get(selection[0]) if selection else None
+
     def _release_selected_pet(self) -> None:
         if not self.connected or self.busy_action:
             return
-        selection = self.storage_tree.selection()
-        pet = self.storage_pet_by_row.get(selection[0]) if selection else None
+        pet = self._selected_storage_pet()
         if pet is None:
             return
 
@@ -1946,6 +1951,7 @@ class PetRespecApp:
         if bag_selection:
             self.pet_tree.selection_remove(*bag_selection)
         self.selected_pet = None
+        self.selected_pet_location = "storage"
         type_name = self.backend.pet_type_name(int(pet["type_id"]))
         self.pet_title_var.set(str(pet["nick"]))
         self.pet_meta_var.set(
@@ -1974,6 +1980,7 @@ class PetRespecApp:
 
     def _show_pet(self, pet: Mapping[str, object] | None) -> None:
         self.selected_pet = dict(pet) if pet is not None else None
+        self.selected_pet_location = "bag" if pet is not None else None
         if pet is None:
             self.pet_title_var.set("请先选择宠物")
             self.pet_meta_var.set("连接服务器后，从左侧宠物列表中选择")
@@ -1997,11 +2004,12 @@ class PetRespecApp:
         self._load_simulator_species(pet)
 
     def _show_storage_detail(self, pet: Mapping[str, object]) -> None:
+        self.selected_pet_location = "storage"
         type_name = self.backend.pet_type_name(int(pet["type_id"]))
         self.pet_title_var.set(str(pet["nick"]))
         self.pet_meta_var.set(
             f"{type_name}  |  等级 {pet['level']}  |  {pet['reincarnation_degree']} 转  |  "
-            f"仓库宠物  |  ID {pet['pet_id']}  |  需移入背包后洗点"
+            f"仓库宠物  |  ID {pet['pet_id']}"
         )
         for key, value in self.metric_values.items():
             value.set(str(pet[key]))
@@ -2747,6 +2755,12 @@ class PetRespecApp:
 
     def _sync_controls(self) -> None:
         idle = self.busy_action is None
+        storage_pet = self._selected_storage_pet()
+        release_visible = self.selected_pet_location == "storage"
+        if release_visible and not self.release_pet_button.winfo_manager():
+            self.release_pet_button.pack(side="left", padx=(8, 0))
+        elif not release_visible and self.release_pet_button.winfo_manager():
+            self.release_pet_button.pack_forget()
         self.connect_button.configure(state="normal" if idle and not self.connected else "disabled")
         self.disconnect_button.configure(state="normal" if idle and self.connected else "disabled")
         self.refresh_button.configure(state="normal" if idle and self.connected else "disabled")
@@ -2769,7 +2783,7 @@ class PetRespecApp:
         )
         self.release_pet_button.configure(
             state="normal"
-            if idle and self.connected and bool(self.storage_tree.selection())
+            if idle and self.connected and storage_pet is not None
             else "disabled"
         )
         self.start_button.configure(
