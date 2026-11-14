@@ -60,7 +60,6 @@ jobs:
           enable-plugins: tk-inter
           include-module: moer,item_names,pet_names
           include-data-files: |
-            ref/egg_codes.bin=ref/egg_codes.bin
             ref/pet_bases.json=ref/pet_bases.json
             ref/skills.xml=ref/skills.xml
           report: build/nuitka-report.xml
@@ -81,7 +80,6 @@ jobs:
               ForEach-Object { $_.name.Replace("\", "/") }
           )
           $required = @(
-            "ref/egg_codes.bin"
             "ref/pet_bases.json"
             "ref/skills.xml"
           )

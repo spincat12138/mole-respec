@@ -1,9 +1,8 @@
-"""Pet panel prediction using extracted V14 data and formulas."""
+"""Pet panel prediction using extracted V15 data and formulas."""
 
 from __future__ import annotations
 
 import json
-import struct
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from itertools import product
@@ -109,20 +108,6 @@ def load_pet_bases() -> dict[tuple[str, str], PetBasis]:
             raise ValueError(f"宠物基数库中存在重复宠物：{basis.name}")
         result[key] = basis
     return result
-
-
-@lru_cache(maxsize=1)
-def _egg_codes() -> tuple[int, ...]:
-    raw = (DATA_DIR / "egg_codes.bin").read_bytes()
-    if len(raw) % 4:
-        raise ValueError("开蛋编码库数据长度错误")
-    return tuple(value[0] for value in struct.iter_unpack("<I", raw))
-
-
-@lru_cache(maxsize=1)
-def _egg_path_map() -> dict[int, int]:
-    mask = (1 << 28) - 1
-    return {code & mask: code >> 28 for code in _egg_codes()}
 
 
 def find_pet_basis(name: str, server: str) -> PetBasis:
@@ -330,7 +315,7 @@ def predict_pet(
     source_points: Sequence[int],
     target_growth: int | None = None,
 ) -> PetPrediction:
-    """Match an arbitrary-level panel against V14's exact ten-value model."""
+    """Match an arbitrary-level panel against V15's exact ten-value model."""
     level = int(pet["level"])
     rebirth = int(pet["reincarnation_degree"])
     applied = int(pet["attr_point_applied"])
@@ -352,8 +337,8 @@ def predict_pet(
     growth = round_display(basis.growth) if target_growth is None else target_growth
     if not isinstance(growth, int):
         raise ValueError("成长必须是整数")
-    growth_min = max(0, round_display(basis.growth) - 40)
-    growth_max = round_display(basis.growth) + 20
+    growth_max = round_display(basis.growth)
+    growth_min = max(0, growth_max - 25)
     if growth not in range(growth_min, growth_max + 1):
         raise ValueError(
             f"成长必须在基数库支持范围 {growth_min} 到 {growth_max} 之间"
@@ -471,63 +456,27 @@ def _iter_all_basis_candidates(
     target_growth: int,
     allowed_tenths: Sequence[frozenset[int]],
 ) -> Iterator[tuple[tuple[int, ...], int, int]]:
-    """Generate every candidate used by V14's unknown-growth search."""
-    original = basis.base
-    center_growth = basis.growth
-    growth_min = max(0, round_display(center_growth) - 40)
-    growth_max = round_display(center_growth) + 20
-    base_fifths = tuple(round_display(value * 5) for value in original)
-    egg_options: list[list[tuple[int, int]]] = []
-    for index in range(4):
-        options: list[tuple[int, int]] = []
-        for delta in range(-64, 64):
-            tenth = max(0, base_fifths[index] + delta) * 2
-            if tenth in allowed_tenths[index]:
-                options.append((delta, tenth))
-        egg_options.append(options)
-    path_map = _egg_path_map()
-    for first, second, third, fourth in product(*egg_options):
-        deltas = (first[0], second[0], third[0], fourth[0])
-        packed = sum((delta + 64) << (7 * index) for index, delta in enumerate(deltas))
-        paths = path_map.get(packed)
-        if paths is None:
-            continue
-        fifth_delta = -sum(deltas)
-        fifth_tenth = max(0, base_fifths[4] + fifth_delta) * 2
-        if fifth_tenth not in allowed_tenths[4]:
-            continue
-        tenths = (first[1], second[1], third[1], fourth[1], fifth_tenth)
-        growth = round_display(sum(tenths) / 10)
-        if center_growth <= growth <= growth_max and growth == target_growth:
-            yield tenths, growth, paths
+    """Generate the shared big-pill and egg candidates used by V15."""
+    center_growth = round_display(basis.growth)
+    extra = center_growth - target_growth
+    base_fifths = tuple(round_display(value * 5) for value in basis.base)
+    matching: dict[tuple[int, ...], int] = {}
 
-    # Low-sum egg draws have no shared cap. Clipping at zero can raise their
-    # displayed sum, so all valid integer growth levels remain searchable.
-    low_options: list[list[tuple[int, int]]] = []
-    for index in range(5):
-        options: list[tuple[int, int]] = []
-        for offset in range(-8, 9):
-            tenth = round_display(max(0.0, original[index] + offset) * 10)
-            if tenth in allowed_tenths[index]:
-                options.append((offset, tenth))
-        low_options.append(options)
-
-    target_total = target_growth * 10
-    for first, second, third, fourth in product(*low_options[:4]):
-        partial_deltas = (first[0], second[0], third[0], fourth[0])
-        partial_sum = sum(partial_deltas)
-        if partial_sum >= 8:
+    for offsets in product(range(-5, 6), repeat=5):
+        shared_shift = sum(offsets) + extra
+        fifths = tuple(
+            base_fifths[index] + 5 * offsets[index] - shared_shift
+            for index in range(5)
+        )
+        if any(value < 0 for value in fifths):
             continue
-        values4 = (first[1], second[1], third[1], fourth[1])
-        subtotal = sum(values4)
-        for fifth, tail in low_options[4]:
-            if fifth > min(8, -partial_sum - 1):
-                continue
-            total = subtotal + tail
-            if total != target_total:
-                continue
-            if total % 10:
-                continue
-            growth = total // 10
-            if growth_min <= growth <= growth_max:
-                yield values4 + (tail,), growth, 1
+        tenths = tuple(value * 2 for value in fifths)
+        if any(
+            tenths[index] not in allowed_tenths[index]
+            for index in range(5)
+        ):
+            continue
+        matching[tenths] = matching.get(tenths, 0) + 1
+
+    for tenths, paths in matching.items():
+        yield tenths, target_growth, paths
