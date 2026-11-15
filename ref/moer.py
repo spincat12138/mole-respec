@@ -1241,14 +1241,12 @@ def _get_xd_item_quantities(s, str2):
 
 
 def eatwz(s, str2, pet, num, item_quantities):
-    global xd_count
     item_id = _XD_ITEM_IDS[num]
     packet = [0, 0, 0, 26, 6, 34, *str2, 0, 0, 5, 172, 0, 0, 0, 0,
               *pet['pet_id_bytes'], *item_id.to_bytes(4, byteorder='big')]
     t1 = tuple(packet)
     req = struct.pack(*('26B',), *t1)
     s.send(req)
-    xd_count += 1
     time.sleep(0.2)
     item_quantities[item_id] -= 1
     print('%s剩余数量：%d' % (_XD_ITEM_TYPES[num], item_quantities[item_id]))
