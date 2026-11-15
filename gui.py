@@ -34,6 +34,7 @@ from pet_prediction import (
 from protocol_backend import (
     EXPERIENCE_BOOK_ID,
     GIANT_ROCK_FRAGMENT_ID,
+    PET_SKILL_OPTIONS,
     ProtocolBackend,
     validate_pet_nickname,
 )
@@ -1311,12 +1312,23 @@ class PetRespecApp:
         ttk.Label(skills_header, text="技能", style="MetricLabel.TLabel").pack(
             side="left"
         )
+        skills_header_actions = ttk.Frame(skills_header, style="Alt.TFrame")
+        skills_header_actions.pack(side="right")
         self.skill_count_var = tk.StringVar(value="-")
         ttk.Label(
-            skills_header,
+            skills_header_actions,
             textvariable=self.skill_count_var,
             style="MetricValue.TLabel",
-        ).pack(side="right")
+            width=5,
+            anchor="e",
+        ).pack(side="left")
+        self.learn_skills_button = ttk.Button(
+            skills_header_actions,
+            text="学习技能",
+            style="CompactTool.TButton",
+            command=self._open_learn_skills_dialog,
+        )
+        self.learn_skills_button.pack(side="left", padx=(8, 0))
         self.skills_content = ttk.Frame(self.skills_panel, style="Surface.TFrame")
         self.skills_content.grid(row=1, column=0, sticky="nsew", pady=(4, 0))
         self._render_pet_skills(None)
@@ -2061,6 +2073,140 @@ class PetRespecApp:
                 side="right"
             )
 
+    def _open_learn_skills_dialog(self) -> None:
+        if not self.connected or self.busy_action or self.selected_pet is None:
+            return
+
+        pet = dict(self.selected_pet)
+        current_levels = {
+            int(skill["skill_id"]): int(skill["level"])
+            for skill in pet.get("skills", ())
+            if isinstance(skill, Mapping)
+        }
+        dialog = tk.Toplevel(self.root)
+        dialog.title("学习技能")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(background=COLORS["surface"])
+
+        content = ttk.Frame(dialog, style="Surface.TFrame", padding=16)
+        content.pack(fill="both", expand=True)
+        ttk.Label(
+            content,
+            text=f"{pet['nick']}  |  选择要学习的技能",
+            style="Section.TLabel",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+        selected_vars: dict[int, tk.BooleanVar] = {}
+        for index, (name, skill_id, target_level) in enumerate(PET_SKILL_OPTIONS):
+            current_level = current_levels.get(skill_id, 0)
+            already_learned = current_level >= target_level
+            variable = tk.BooleanVar(value=False)
+            selected_vars[skill_id] = variable
+            label = f"{name}  {target_level}级"
+            if already_learned:
+                label += "  已学习"
+            checkbutton = ttk.Checkbutton(
+                content,
+                text=label,
+                variable=variable,
+                state="disabled" if already_learned else "normal",
+            )
+            row, column = divmod(index, 2)
+            checkbutton.grid(
+                row=row + 1,
+                column=column,
+                sticky="w",
+                padx=(0 if column == 0 else 24, 0),
+                pady=4,
+            )
+        actions = ttk.Frame(content, style="Surface.TFrame")
+        actions.grid(row=6, column=0, columnspan=2, sticky="e", pady=(14, 0))
+        ttk.Button(
+            actions,
+            text="取消",
+            style="Tool.TButton",
+            command=dialog.destroy,
+        ).pack(side="left")
+        confirm_button = ttk.Button(
+            actions,
+            text="学习",
+            style="Accent.TButton",
+            state="disabled",
+        )
+        confirm_button.pack(side="left", padx=(8, 0))
+
+        def sync_confirm_button(*_args: object) -> None:
+            has_selection = any(variable.get() for variable in selected_vars.values())
+            confirm_button.configure(
+                state="normal" if has_selection else "disabled"
+            )
+
+        def confirm() -> None:
+            selected_ids = tuple(
+                skill_id
+                for _name, skill_id, _level in PET_SKILL_OPTIONS
+                if selected_vars[skill_id].get()
+            )
+            if not selected_ids:
+                return
+            dialog.destroy()
+            self._learn_selected_pet_skills(pet, selected_ids)
+
+        for variable in selected_vars.values():
+            variable.trace_add("write", sync_confirm_button)
+        confirm_button.configure(command=confirm)
+
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.grab_set()
+        dialog.focus_set()
+
+    def _learn_selected_pet_skills(
+        self,
+        pet: Mapping[str, object],
+        skill_ids: tuple[int, ...],
+    ) -> None:
+        pet_id = int(pet["pet_id"])
+        selected_names = [
+            name
+            for name, skill_id, _level in PET_SKILL_OPTIONS
+            if skill_id in skill_ids
+        ]
+        self._set_busy(
+            "learn_pet_skills",
+            f"正在为 {pet['nick']} 学习 {len(skill_ids)} 个技能",
+        )
+
+        def work() -> None:
+            try:
+                self.backend.learn_pet_skills(pet_id, skill_ids)
+                bag_pets = self.backend.load_pets()
+                if not any(
+                    int(candidate["pet_id"]) == pet_id for candidate in bag_pets
+                ):
+                    raise LookupError("学习技能后未找到所选宠物")
+                self.events.put(
+                    (
+                        "pet_skills_learned",
+                        (pet_id, tuple(selected_names), bag_pets),
+                    )
+                )
+            except Exception as exc:
+                try:
+                    bag_pets = self.backend.load_pets()
+                except Exception as refresh_exc:
+                    exc = RuntimeError(f"{exc}；刷新宠物数据失败：{refresh_exc}")
+                    bag_pets = None
+                self.events.put(
+                    (
+                        "pet_skills_failed",
+                        (pet_id, bag_pets, exc),
+                    )
+                )
+
+        self._run_worker(work)
+
     def _prediction_cache_key(
         self, pet: Mapping[str, object]
     ) -> tuple[str, int, int]:
@@ -2786,6 +2932,11 @@ class PetRespecApp:
             if idle and self.connected and storage_pet is not None
             else "disabled"
         )
+        self.learn_skills_button.configure(
+            state="normal"
+            if idle and self.connected and self.selected_pet is not None
+            else "disabled"
+        )
         self.start_button.configure(
             state="normal"
             if idle
@@ -3062,6 +3213,25 @@ class PetRespecApp:
                     self.pet_tree.selection_remove(*bag_selection)
                 self.selected_pet = None
                 self._select_storage_pet()
+            return
+        if event == "pet_skills_learned":
+            pet_id, selected_names, bag_pets = payload
+            self.bag_pets = bag_pets
+            self._set_busy(
+                None,
+                f"已学习技能：{'、'.join(selected_names)}",
+            )
+            self._render_pet_list(preferred_pet_id=pet_id)
+            return
+        if event == "pet_skills_failed":
+            pet_id, bag_pets, exc = payload
+            if bag_pets is not None:
+                self.bag_pets = bag_pets
+            self._set_busy(None)
+            if bag_pets is not None:
+                self._render_pet_list(preferred_pet_id=pet_id)
+            self.status_var.set(f"学习技能失败：{exc}")
+            messagebox.showerror("学习技能失败", str(exc), parent=self.root)
             return
         if event == "progress":
             config, progress = payload

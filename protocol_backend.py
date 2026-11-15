@@ -17,6 +17,21 @@ GIANT_ROCK_FRAGMENT_ID = 290011
 EXPERIENCE_BOOK_ID = 350050
 MISC_ITEM_IDS = (GIANT_ROCK_FRAGMENT_ID, EXPERIENCE_BOOK_ID)
 PET_NICKNAME_MAX_BYTES = 16
+PET_SKILL_TRAINER_NPC_IDS = {1: 1201, 8: 1208}
+PET_SKILL_OPTIONS = (
+    ("崩牙", 5103, 8),
+    ("狂击", 5106, 8),
+    ("破魂", 5501, 8),
+    ("幻盾", 5703, 8),
+    ("冥思", 6001, 8),
+    ("追击", 5102, 8),
+    ("护卫", 8501, 1),
+    ("回击", 5704, 1),
+    ("魔法防御", 5702, 1),
+)
+_PET_SKILL_LEVELS = {
+    skill_id: level for _name, skill_id, level in PET_SKILL_OPTIONS
+}
 
 
 def validate_pet_nickname(name: str) -> str:
@@ -148,6 +163,39 @@ class ProtocolBackend:
         nickname = validate_pet_nickname(name)
         game_socket, uid_bytes = self._session()
         self._moer._pet_change_name(game_socket, uid_bytes, pet, nickname)
+
+    def learn_pet_skills(
+        self,
+        pet_id: int,
+        skill_ids: tuple[int, ...],
+    ) -> tuple[dict[str, int], ...]:
+        selected_ids = tuple(skill_ids)
+        if not selected_ids:
+            raise ValueError("请至少选择一个技能")
+        if len(selected_ids) != len(set(selected_ids)):
+            raise ValueError("不能重复选择同一个技能")
+        unknown_ids = [
+            skill_id for skill_id in selected_ids
+            if skill_id not in _PET_SKILL_LEVELS
+        ]
+        if unknown_ids:
+            raise ValueError(f"不支持的宠物技能ID：{unknown_ids[0]}")
+
+        game_socket, uid_bytes = self._session()
+        results = []
+        for skill_id in selected_ids:
+            skill_level = _PET_SKILL_LEVELS[skill_id]
+            results.append(
+                self._moer._learn_pet_skill(
+                    game_socket,
+                    uid_bytes,
+                    int(pet_id),
+                    skill_id,
+                    skill_level,
+                    PET_SKILL_TRAINER_NPC_IDS[skill_level],
+                )
+            )
+        return tuple(results)
 
     def load_item_quantities(self) -> dict[int, int]:
         game_socket, uid_bytes = self._session()

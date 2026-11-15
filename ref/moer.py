@@ -25,6 +25,7 @@ _TMF_HEADER_SIZE = 18
 _PET_ALLOCATE_ATTR_POINTS_COMMAND = 1606
 _PET_RESET_ATTR_POINTS_COMMAND = 1565
 _PET_RESET_ATTR_POINTS_ITEM_ID = 360010
+_PET_LEARN_SKILL_COMMAND = 1601
 _PET_RELEASE_COMMAND = 1561
 _EXP_TREE_COMMAND = 2000
 _PET_AUTO_ALLOCATE_ATTR_POINTS_COMMAND = 1603
@@ -1218,6 +1219,59 @@ def _allocate_pet_attr_points(s, str2, pet_id, points):
             '1606回包宠物ID不匹配（期望%d，实际%d）' %
             (pet_id, result_pet['pet_id']))
     return result_pet
+
+
+def _learn_pet_skill(s, str2, pet_id, skill_id, skill_level, npc_id):
+    """通过 1601 为宠物学习指定等级的技能。"""
+    values = (
+        (npc_id, 'NPC ID'),
+        (pet_id, '宠物ID'),
+        (skill_id, '技能ID'),
+    )
+    normalized = []
+    for value, label in values:
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError('%s必须是整数' % label)
+        if value < 1 or value > 0xffffffff:
+            raise ValueError('%s超出uint32范围' % label)
+        normalized.append(value)
+    if (not isinstance(skill_level, int) or isinstance(skill_level, bool)
+            or skill_level not in range(1, 11)):
+        raise ValueError('技能等级必须是1到10之间的整数')
+
+    # 客户端 SocketConnection.send 的实参顺序为
+    # npcID、petId、skillId、skillLv，四项均按 uint32 编码。
+    payload = struct.pack(
+        '>4I', normalized[0], normalized[1], normalized[2], skill_level)
+    packet = _send_tmf_request(
+        s, str2, _PET_LEARN_SKILL_COMMAND, payload)
+    response = _parse_tmf_response_payload(
+        packet, _PET_LEARN_SKILL_COMMAND)
+    if len(response) != 17:
+        raise ValueError('1601协议回包长度异常（期望17，实际%d）' % len(response))
+
+    response_pet_id, response_skill_id, response_level, xiaomee, cost = (
+        struct.unpack('>IIBII', response)
+    )
+    if response_pet_id != normalized[1]:
+        raise RuntimeError(
+            '1601回包宠物ID不匹配（期望%d，实际%d）' %
+            (normalized[1], response_pet_id))
+    if response_skill_id != normalized[2]:
+        raise RuntimeError(
+            '1601回包技能ID不匹配（期望%d，实际%d）' %
+            (normalized[2], response_skill_id))
+    if response_level != skill_level:
+        raise RuntimeError(
+            '1601回包技能等级不匹配（期望%d，实际%d）' %
+            (skill_level, response_level))
+    return {
+        'pet_id': response_pet_id,
+        'skill_id': response_skill_id,
+        'skill_level': response_level,
+        'xiaomee': xiaomee,
+        'cost': cost,
+    }
 
 
 def _load_xd_pets(s, str2):
