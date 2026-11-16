@@ -223,6 +223,8 @@ class PetRespecApp(QMainWindow):
         self.prediction_cache: dict[tuple[str, int, int], PredictionCacheEntry] = {}
         self.pet_sort_column: int | None = None
         self.pet_sort_order = Qt.SortOrder.AscendingOrder
+        self.storage_sort_column: int | None = None
+        self.storage_sort_order = Qt.SortOrder.AscendingOrder
 
         self._configure_window()
         self._build_ui()
@@ -529,6 +531,10 @@ class PetRespecApp(QMainWindow):
         storage_heading.addStretch()
         layout.addLayout(storage_heading)
         self.storage_table = self._new_pet_table(("昵称", "种类", "等级"))
+        storage_header = self.storage_table.horizontalHeader()
+        storage_header.sectionClicked.connect(self._sort_storage_table)
+        for column in range(3):
+            self.storage_table.horizontalHeaderItem(column).setToolTip("点击排序")
         self.storage_table.itemSelectionChanged.connect(self._select_storage_pet)
         layout.addWidget(self.storage_table, 1)
         return frame
@@ -1159,8 +1165,8 @@ class PetRespecApp(QMainWindow):
         return -1
 
     def _selected_bag_pet(self) -> dict[str, object] | None:
-        row = self.pet_table.currentRow()
-        item = self.pet_table.item(row, 0) if row >= 0 else None
+        selected_rows = self.pet_table.selectionModel().selectedRows()
+        item = self.pet_table.item(selected_rows[0].row(), 0) if selected_rows else None
         if item is None:
             return None
         pet_id = item.data(Qt.ItemDataRole.UserRole)
@@ -1172,11 +1178,15 @@ class PetRespecApp(QMainWindow):
         )
 
     def _render_storage_list(self, preferred_pet_id: int | None = None) -> None:
+        current_id = int(preferred_pet_id) if preferred_pet_id is not None else None
+        if current_id is None:
+            current_pet = self._selected_storage_pet()
+            if current_pet is not None:
+                current_id = int(current_pet["pet_id"])
         self.storage_count_label.setText(str(len(self.storage_pets)))
         self.storage_table.blockSignals(True)
         self.storage_table.clearSpans()
         self.storage_table.setRowCount(max(1, len(self.storage_pets)))
-        selected_row = -1
         if not self.storage_pets:
             empty = QTableWidgetItem(
                 "连接后显示仓库宠物" if not self.connected else "仓库中暂无宠物"
@@ -1189,17 +1199,67 @@ class PetRespecApp(QMainWindow):
             )
             self.storage_table.setItem(0, 0, empty)
         for row, pet in enumerate(self.storage_pets):
-            values = (pet["nick"], self.backend.pet_type_name(int(pet["type_id"])), pet["level"])
+            values = (
+                pet["nick"],
+                self.backend.pet_type_name(int(pet["type_id"])),
+                pet["level"],
+            )
             for column, value in enumerate(values):
-                item = QTableWidgetItem(str(value))
+                item = QTableWidgetItem()
+                item.setData(
+                    Qt.ItemDataRole.DisplayRole,
+                    int(value) if column == 2 else str(value),
+                )
+                item.setData(Qt.ItemDataRole.UserRole, int(pet["pet_id"]))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.storage_table.setItem(row, column, item)
-            if preferred_pet_id == int(pet["pet_id"]):
-                selected_row = row
+        if self.storage_sort_column is not None:
+            self.storage_table.sortItems(
+                self.storage_sort_column, self.storage_sort_order
+            )
+        selected_row = self._storage_table_row_for_id(current_id)
         self.storage_table.blockSignals(False)
         if selected_row >= 0:
             self.storage_table.selectRow(selected_row)
         self._sync_controls()
+
+    def _sort_storage_table(self, column: int) -> None:
+        if column not in (0, 1, 2) or not self.storage_pets:
+            return
+        selected_pet = self._selected_storage_pet()
+        selected_id = int(selected_pet["pet_id"]) if selected_pet is not None else None
+        if self.storage_sort_column == column:
+            self.storage_sort_order = (
+                Qt.SortOrder.DescendingOrder
+                if self.storage_sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
+        else:
+            self.storage_sort_column = column
+            self.storage_sort_order = Qt.SortOrder.AscendingOrder
+        labels = ["昵称", "种类", "等级"]
+        labels[column] += (
+            " ↑"
+            if self.storage_sort_order == Qt.SortOrder.AscendingOrder
+            else " ↓"
+        )
+        for index, label in enumerate(labels):
+            self.storage_table.horizontalHeaderItem(index).setText(label)
+        self.storage_table.blockSignals(True)
+        self.storage_table.sortItems(column, self.storage_sort_order)
+        selected_row = self._storage_table_row_for_id(selected_id)
+        if selected_row >= 0:
+            self.storage_table.selectRow(selected_row)
+        self.storage_table.blockSignals(False)
+
+    def _storage_table_row_for_id(self, pet_id: int | None) -> int:
+        if pet_id is None:
+            return -1
+        for row in range(self.storage_table.rowCount()):
+            item = self.storage_table.item(row, 0)
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == pet_id:
+                return row
+        return -1
 
     def _remember_pet_selection(self, pet: Mapping[str, object]) -> None:
         self.remembered_pet_selection = (int(self.backend.uid), int(pet["pet_id"]))
@@ -1229,10 +1289,9 @@ class PetRespecApp(QMainWindow):
     def _select_storage_pet(self) -> None:
         if self.busy_action:
             return
-        row = self.storage_table.currentRow()
-        if row not in range(len(self.storage_pets)):
+        pet = self._selected_storage_pet()
+        if pet is None:
             return
-        pet = self.storage_pets[row]
         self.pet_table.blockSignals(True)
         self.pet_table.clearSelection()
         self.pet_table.blockSignals(False)
@@ -1520,10 +1579,25 @@ class PetRespecApp(QMainWindow):
             self._set_status("正在停止，将在本次请求完成后结束")
 
     def _selected_storage_pet(self) -> dict[str, object] | None:
-        if self.selected_pet_location != "storage":
+        selected_rows = self.storage_table.selectionModel().selectedRows()
+        item = (
+            self.storage_table.item(selected_rows[0].row(), 0)
+            if selected_rows
+            else None
+        )
+        if item is None:
             return None
-        row = self.storage_table.currentRow()
-        return self.storage_pets[row] if row in range(len(self.storage_pets)) else None
+        pet_id = item.data(Qt.ItemDataRole.UserRole)
+        if pet_id is None:
+            return None
+        return next(
+            (
+                pet
+                for pet in self.storage_pets
+                if int(pet["pet_id"]) == int(pet_id)
+            ),
+            None,
+        )
 
     def _move_selected_pet(self, direction: str) -> None:
         if not self.connected or self.busy_action:
