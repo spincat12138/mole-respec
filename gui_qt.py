@@ -1980,7 +1980,6 @@ class PetRespecApp(QMainWindow):
         if self.item_combo.count():
             self.item_combo.setCurrentIndex(min(selected, self.item_combo.count() - 1))
         self.item_combo.blockSignals(False)
-        self._render_targets()
 
     def _exchange_big_pills(self) -> None:
         try:
