@@ -266,6 +266,8 @@ class PetRespecApp(QMainWindow):
             QPushButton:pressed {{ background: #e4efee; border-color: {COLORS['accent']}; }}
             QPushButton:focus {{ border: 2px solid #4f9e98; padding: 1px 11px; }}
             QPushButton:disabled {{ color: #9aa8aa; background: #f2f5f5; border-color: #d9e1e1; }}
+            QPushButton#predictionAction {{ padding: 2px 8px; }}
+            QPushButton#predictionAction:focus {{ padding: 1px 7px; }}
             QPushButton#accent {{ color: white; background: {COLORS['accent']}; border-color: {COLORS['accent']}; font-weight: 600; }}
             QPushButton#accent:hover {{ background: {COLORS['accent_dark']}; }}
             QPushButton#accent:disabled {{ color: #98a5a6; background: #e8eded; border-color: #d6dfdf; }}
@@ -749,20 +751,22 @@ class PetRespecApp(QMainWindow):
         editor_layout.setContentsMargins(10, 8, 10, 8)
         editor_layout.setSpacing(6)
         points_row = QHBoxLayout()
+        points_row.setSpacing(4)
         points_row.addWidget(QLabel("当前自由加点"))
         self.prediction_point_entries = []
         for label in ("体", "力", "耐", "敏", "智"):
             points_row.addWidget(self._muted(label))
-            entry = _line("", 52)
+            entry = _line()
+            entry.setMinimumWidth(36)
+            entry.setMaximumWidth(52)
             self.prediction_point_entries.append(entry)
             points_row.addWidget(entry)
         points_row.addWidget(self._muted("成长"))
-        self.prediction_growth_entry = _line("", 68)
+        self.prediction_growth_entry = _line()
+        self.prediction_growth_entry.setMinimumWidth(46)
+        self.prediction_growth_entry.setMaximumWidth(68)
         points_row.addWidget(self.prediction_growth_entry)
         points_row.addStretch()
-        editor_layout.addLayout(points_row)
-        action_row = QHBoxLayout()
-        action_row.addStretch()
         self.prediction_calculate_button = self._button("重新计算", self._calculate_prediction)
         self.prediction_unknown_button = self._button("未知加点预测", self._calculate_unknown_point_prediction)
         self._set_standard_icon(
@@ -771,9 +775,19 @@ class PetRespecApp(QMainWindow):
         self._set_standard_icon(
             self.prediction_unknown_button, QStyle.StandardPixmap.SP_MessageBoxQuestion
         )
-        action_row.addWidget(self.prediction_calculate_button)
-        action_row.addWidget(self.prediction_unknown_button)
-        editor_layout.addLayout(action_row)
+        for button in (
+            self.prediction_calculate_button,
+            self.prediction_unknown_button,
+        ):
+            button.setObjectName("predictionAction")
+            button.setMinimumWidth(
+                button.fontMetrics().horizontalAdvance(button.text())
+                + button.iconSize().width()
+                + 28
+            )
+        points_row.addWidget(self.prediction_calculate_button)
+        points_row.addWidget(self.prediction_unknown_button)
+        editor_layout.addLayout(points_row)
         layout.addWidget(editor)
         self.prediction_base_label = QLabel("匹配到的 0 转基数：-")
         self.prediction_fit_label = self._muted()
@@ -819,7 +833,11 @@ class PetRespecApp(QMainWindow):
         editors.addWidget(basis_box)
         allocation_box = QGroupBox("自由加点")
         allocation_grid = QGridLayout(allocation_box)
-        self.simulator_allocation_headers = [QLabel("0转99级\n最多98"), QLabel("0转50级\n最多49"), QLabel("10转99级\n最多98")]
+        self.simulator_allocation_headers = [
+            QLabel("0转99级"),
+            QLabel("0转50级"),
+            QLabel("10转99级"),
+        ]
         allocation_grid.addWidget(self._muted("属性"), 0, 0)
         for column, header in enumerate(self.simulator_allocation_headers, 1):
             header.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1441,9 +1459,9 @@ class PetRespecApp(QMainWindow):
         try:
             level = self._read_simulator_level()
         except ValueError:
-            self.simulator_allocation_headers[1].setText("0转?级\n最多?")
+            self.simulator_allocation_headers[1].setText("0转?级")
             return
-        self.simulator_allocation_headers[1].setText(f"0转{level}级\n最多{level - 1}")
+        self.simulator_allocation_headers[1].setText(f"0转{level}级")
 
     def _fill_simulator_strength(self) -> None:
         try:
