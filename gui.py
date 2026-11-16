@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import ctypes
 import queue
+import sys
 import threading
 import tkinter as tk
 from dataclasses import dataclass
+from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Callable, Mapping
+
+from PIL import Image, ImageTk
 
 from pet_respec import (
     BASE_FIELDS,
@@ -55,6 +60,9 @@ COLORS = {
     "warning": "#9a5a12",
     "danger": "#a23b3b",
 }
+
+APP_USER_MODEL_ID = "mole-respec.desktop"
+APP_ICON_PATH = Path(__file__).resolve().with_name("logo.webp")
 
 
 RESULT_REASON = {
@@ -204,6 +212,16 @@ class PetRespecApp:
 
     def _configure_root(self) -> None:
         self.root.title("摩尔勇士宠物洗点工具")
+        with Image.open(APP_ICON_PATH) as image:
+            icon_image = image.convert("RGBA")
+        icon_image.thumbnail((256, 256), Image.Resampling.LANCZOS)
+        icon_canvas = Image.new("RGBA", (256, 256), (255, 255, 255, 255))
+        icon_canvas.alpha_composite(
+            icon_image,
+            ((256 - icon_image.width) // 2, (256 - icon_image.height) // 2),
+        )
+        self.app_icon = ImageTk.PhotoImage(icon_canvas, master=self.root)
+        self.root.iconphoto(True, self.app_icon)
         self.root.geometry("1180x840")
         self.root.minsize(980, 780)
         self.root.configure(background=COLORS["background"])
@@ -3336,6 +3354,10 @@ class PetRespecApp:
 
 
 def run() -> None:
+    if sys.platform == "win32":
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            APP_USER_MODEL_ID
+        )
     root = tk.Tk()
     PetRespecApp(root)
     root.mainloop()
