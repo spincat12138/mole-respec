@@ -27,7 +27,9 @@ jobs:
 
       - name: Install project dependencies
         shell: pwsh
-        run: python -m pip install --upgrade pip "uncompyle6==3.9.3" "Pillow==11.3.0"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt "Pillow==11.3.0"
 
       - name: Convert WebP logo to Windows icon
         shell: pwsh
@@ -57,10 +59,11 @@ jobs:
           mode: onefile
           output-dir: build
           output-file: mole-respec.exe
-          enable-plugins: tk-inter
+          enable-plugins: pyqt6
           include-module: moer,item_names,pet_names
           include-data-files: |
             logo.webp=logo.webp
+            thanks_header.png=thanks_header.png
             ref/pet_bases.json=ref/pet_bases.json
             ref/skills.xml=ref/skills.xml
           report: build/nuitka-report.xml
@@ -82,6 +85,7 @@ jobs:
           )
           $required = @(
             "logo.webp"
+            "thanks_header.png"
             "ref/pet_bases.json"
             "ref/skills.xml"
           )

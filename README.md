@@ -14,10 +14,10 @@
 
 ## 运行
 
-需要 Python 3.10+。界面使用 Tkinter，协议参考文件依赖 `uncompyle6`，应用图标加载依赖 Pillow。
+需要 Python 3.10+。界面使用 PyQt6，协议参考文件依赖 `uncompyle6`。
 
 ```powershell
-python -m pip install uncompyle6 Pillow
+python -m pip install -r requirements.txt
 python app.py
 ```
 
