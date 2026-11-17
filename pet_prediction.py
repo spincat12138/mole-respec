@@ -14,6 +14,8 @@ from typing import Callable, Iterator, Mapping, Sequence
 EFFORT_KEYS = ("physique", "strength", "endurance", "quick", "intelligence")
 BATTLE_KEYS = ("hp_max", "attack", "defense", "speed", "mp_max")
 BATTLE_TOLERANCES = (5, 5, 5, 5, 1)
+STRENGTH_INDEX = EFFORT_KEYS.index("strength")
+INTELLIGENCE_INDEX = EFFORT_KEYS.index("intelligence")
 DATA_DIR = Path(__file__).resolve().parent / "ref"
 
 WEIGHTS = (
@@ -118,6 +120,22 @@ def find_pet_basis(name: str, server: str) -> PetBasis:
     except KeyError as exc:
         server_label = "活动服" if server == "active" else "普通服"
         raise LookupError(f"基数库中没有{server_label}宠物“{name}”") from exc
+
+
+def default_prediction_points(
+    pet: Mapping[str, object], total_points: int
+) -> tuple[int, ...]:
+    """Put all prediction points into the pet's stronger offensive effort."""
+    if not isinstance(total_points, int) or total_points < 0:
+        raise ValueError("默认自由加点总数必须是非负整数")
+    preferred_index = (
+        STRENGTH_INDEX
+        if int(pet["strength"]) > int(pet["intelligence"])
+        else INTELLIGENCE_INDEX
+    )
+    return tuple(
+        total_points if index == preferred_index else 0 for index in range(5)
+    )
 
 
 def infer_allocated_points(
@@ -365,6 +383,7 @@ def predict_pet(
     if any(not values for values in allowed_tenths):
         raise ValueError("当前努力值和自由加点无法对应此宠物的可能基数")
 
+    projected_points = default_prediction_points(pet, 98)
     for tenths, _candidate_growth, paths in _iter_all_basis_candidates(
         basis, growth, allowed_tenths
     ):
@@ -386,8 +405,8 @@ def predict_pet(
             continue
 
         one = scenario(base, 1, 0, (0, 0, 0, 0, 0))
-        ninety_nine = scenario(base, 99, 0, (0, 98, 0, 0, 0))
-        ten_turn = scenario(base, 99, 10, (0, 98, 0, 0, 0))
+        ninety_nine = scenario(base, 99, 0, projected_points)
+        ten_turn = scenario(base, 99, 10, projected_points)
         projected = (one, ninety_nine, ten_turn)
         key = tenths + points + tuple(
             value

@@ -47,6 +47,7 @@ from pet_prediction import (
     PetBasis,
     PetPrediction,
     apply_basis_wave,
+    default_prediction_points,
     find_pet_basis,
     predict_pet,
     predict_pet_with_unknown_points,
@@ -742,7 +743,7 @@ class PetRespecApp(QMainWindow):
         layout.setContentsMargins(10, 12, 10, 10)
         layout.setSpacing(9)
         layout.addWidget(self._page_title("等级与转生预测"))
-        self.prediction_intro_label = self._muted("选择宠物后，自动按默认成长和全力加点计算预测")
+        self.prediction_intro_label = self._muted("选择宠物后，自动按默认成长和力量/智力较高项加点计算预测")
         self.prediction_intro_label.setWordWrap(True)
         layout.addWidget(self.prediction_intro_label)
         editor = QFrame()
@@ -1787,7 +1788,7 @@ class PetRespecApp(QMainWindow):
             self.prediction_growth_entry.clear()
             self.prediction_growth_entry.setEnabled(False)
             self.prediction_calculate_button.setEnabled(False)
-            self.prediction_intro_label.setText("选择宠物后，自动按默认成长和全力加点计算预测")
+            self.prediction_intro_label.setText("选择宠物后，自动按默认成长和力量/智力较高项加点计算预测")
             self.prediction_base_label.setText("匹配到的 0 转基数：-")
             self.prediction_fit_label.clear()
             self._clear_prediction_candidates()
@@ -1803,7 +1804,7 @@ class PetRespecApp(QMainWindow):
             self.prediction_calculate_button.setEnabled(True)
             self._display_prediction_cache(pet, cached)
             return
-        points = (0, int(pet["attr_point_applied"]), 0, 0, 0)
+        points = default_prediction_points(pet, int(pet["attr_point_applied"]))
         for entry, value in zip(self.prediction_point_entries, points):
             entry.setText(str(value))
             entry.setEnabled(True)
