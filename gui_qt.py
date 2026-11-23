@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from PyQt6.QtCore import QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QCloseEvent, QIcon, QPixmap
+from PyQt6.QtGui import QColor, QCloseEvent, QIcon, QIntValidator, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -107,9 +107,9 @@ AUTO_TARGET_WAVES = (
 )
 AUTO_TARGET_KEYS = {
     "base": (
-        frozenset(("physique", "strength")),
-        frozenset(("strength", "quick")),
-        frozenset(("physique", "quick")),
+        frozenset(("physique", "strength", "intelligence")),
+        frozenset(("strength", "quick", "intelligence")),
+        frozenset(("physique", "quick", "intelligence")),
     ),
     "derived": (
         frozenset(("hp_max", "attack")),
@@ -596,12 +596,16 @@ class PetRespecApp(QMainWindow):
         detail.addWidget(self.pet_meta_label)
         header.addLayout(detail, 1)
         self.change_pet_name_button = self._button("修改昵称", self._change_selected_pet_name)
+        self.allocate_pet_attr_button = self._button("一键加点", self._allocate_selected_pet_attr_points)
         self.to_storage_button = self._button("放回仓库", lambda: self._move_selected_pet("to_storage"))
         self.to_bag_button = self._button("取回背包", lambda: self._move_selected_pet("to_bag"))
         self.release_pet_button = self._button("放生宠物", self._release_selected_pet)
         self.release_pet_button.setObjectName("danger")
         self._set_standard_icon(
             self.change_pet_name_button, QStyle.StandardPixmap.SP_FileDialogContentsView
+        )
+        self._set_standard_icon(
+            self.allocate_pet_attr_button, QStyle.StandardPixmap.SP_DialogApplyButton
         )
         self._set_standard_icon(
             self.to_storage_button, QStyle.StandardPixmap.SP_ArrowDown
@@ -612,7 +616,13 @@ class PetRespecApp(QMainWindow):
         self._set_standard_icon(
             self.release_pet_button, QStyle.StandardPixmap.SP_TrashIcon
         )
-        for button in (self.change_pet_name_button, self.to_storage_button, self.to_bag_button, self.release_pet_button):
+        for button in (
+            self.change_pet_name_button,
+            self.allocate_pet_attr_button,
+            self.to_storage_button,
+            self.to_bag_button,
+            self.release_pet_button,
+        ):
             header.addWidget(button)
         layout.addLayout(header)
 
@@ -743,7 +753,7 @@ class PetRespecApp(QMainWindow):
         layout.setContentsMargins(10, 12, 10, 10)
         layout.setSpacing(9)
         layout.addWidget(self._page_title("等级与转生预测"))
-        self.prediction_intro_label = self._muted("选择宠物后，自动按默认成长和力量/智力较高项加点计算预测")
+        self.prediction_intro_label = self._muted("选择宠物后，自动按当前自由加点分布计算预测")
         self.prediction_intro_label.setWordWrap(True)
         layout.addWidget(self.prediction_intro_label)
         editor = QFrame()
@@ -1690,6 +1700,108 @@ class PetRespecApp(QMainWindow):
 
         self._run_worker(work)
 
+    def _prompt_pet_attr_points(self, pet: Mapping[str, object]) -> tuple[int, ...] | None:
+        try:
+            available = int(pet["attr_point_remaid"]) + int(pet["attr_point_applied"])
+        except (KeyError, TypeError, ValueError) as exc:
+            self._show_error("无法读取属性点", exc)
+            return None
+        if available < 0:
+            self._show_error("无法读取属性点", "宠物可分配点数无效")
+            return None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("一键加点")
+        dialog.setModal(True)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(f"宠物“{pet['nick']}”洗点后分配自由点"))
+        layout.addWidget(self._muted(f"五项合计不超过 {available} 点"))
+
+        points_grid = QGridLayout()
+        points_grid.setHorizontalSpacing(8)
+        entries: list[QLineEdit] = []
+        for column, (_key, label) in enumerate(BASE_FIELDS):
+            name = QLabel(label)
+            name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            entry = QLineEdit("0")
+            entry.setValidator(QIntValidator(0, 0xFFFF, entry))
+            entry.setMaxLength(5)
+            entry.setFixedWidth(44)
+            entry.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            points_grid.addWidget(name, 0, column, alignment=Qt.AlignmentFlag.AlignCenter)
+            points_grid.addWidget(entry, 1, column, alignment=Qt.AlignmentFlag.AlignCenter)
+            entries.append(entry)
+        layout.addLayout(points_grid)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("洗点并加点")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+
+        def accept() -> None:
+            try:
+                points = tuple(int(entry.text()) for entry in entries)
+            except ValueError:
+                QMessageBox.warning(dialog, "输入有误", "五项加点必须全部填写非负整数。")
+                return
+            if sum(points) > available:
+                QMessageBox.warning(
+                    dialog,
+                    "输入有误",
+                    f"五项加点合计为 {sum(points)}，超过当前可分配点数 {available}。",
+                )
+                return
+            dialog.accept()
+
+        buttons.accepted.connect(accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return tuple(int(entry.text()) for entry in entries)
+
+    def _allocate_selected_pet_attr_points(self) -> None:
+        if not self.connected or self.busy_action:
+            return
+        pet = self.selected_pet
+        if pet is None or self.selected_pet_location != "bag":
+            return
+        points = self._prompt_pet_attr_points(pet)
+        if points is None:
+            return
+
+        pet_id = int(pet["pet_id"])
+        pet_name = str(pet["nick"])
+        self._set_busy("allocate_pet_attr", f"正在重置并为 {pet_name} 加点")
+
+        def work() -> None:
+            try:
+                reset_pet = self.backend.reset_pet_attr_points(pet_id)
+                remaining = int(reset_pet["attr_point_remaid"])
+                if sum(points) > remaining:
+                    raise RuntimeError(
+                        f"宠物洗点已成功，但输入总和 {sum(points)} 超过洗点后可分配点数 {remaining}"
+                    )
+                try:
+                    result_pet = self.backend.allocate_pet_attr_points(pet_id, points)
+                except Exception as exc:
+                    raise RuntimeError(f"宠物洗点已成功，但加点失败：{exc}") from exc
+                self.events.put(
+                    (
+                        "pet_attr_allocated",
+                        (
+                            pet_id,
+                            result_pet,
+                            self.backend.load_pets(),
+                        ),
+                    )
+                )
+            except Exception as exc:
+                self.events.put(("error", ("allocate_pet_attr", exc)))
+
+        self._run_worker(work)
+
     def _release_selected_pet(self) -> None:
         if not self.connected or self.busy_action:
             return
@@ -1788,7 +1900,7 @@ class PetRespecApp(QMainWindow):
             self.prediction_growth_entry.clear()
             self.prediction_growth_entry.setEnabled(False)
             self.prediction_calculate_button.setEnabled(False)
-            self.prediction_intro_label.setText("选择宠物后，自动按默认成长和力量/智力较高项加点计算预测")
+            self.prediction_intro_label.setText("选择宠物后，自动按当前自由加点分布计算预测")
             self.prediction_base_label.setText("匹配到的 0 转基数：-")
             self.prediction_fit_label.clear()
             self._clear_prediction_candidates()
@@ -2212,6 +2324,7 @@ class PetRespecApp(QMainWindow):
         for widget in (self.uid_entry, self.password_entry, self.server_combo, self.show_password):
             widget.setEnabled(idle and not self.connected)
         self.change_pet_name_button.setEnabled(idle and self.connected and (bag_selected or storage_selected))
+        self.allocate_pet_attr_button.setEnabled(idle and self.connected and bag_selected)
         self.to_storage_button.setEnabled(idle and self.connected and bag_selected)
         self.to_bag_button.setEnabled(idle and self.connected and storage_selected)
         self.release_pet_button.setEnabled(idle and self.connected and storage_selected)
@@ -2343,6 +2456,14 @@ class PetRespecApp(QMainWindow):
             self._render_storage_list(pet_id if location == "storage" else None)
             if location == "storage":
                 self._select_storage_pet()
+            return
+        if event == "pet_attr_allocated":
+            pet_id, result_pet, self.bag_pets = payload
+            self._set_busy(
+                None,
+                f"已为 {result_pet['nick']} 分配自由点，剩余 {result_pet['attr_point_remaid']} 点",
+            )
+            self._render_pet_list(int(pet_id))
             return
         if event == "pet_skills_learned":
             pet_id, names, self.bag_pets = payload

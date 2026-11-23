@@ -125,7 +125,11 @@ def find_pet_basis(name: str, server: str) -> PetBasis:
 def default_prediction_points(
     pet: Mapping[str, object], total_points: int
 ) -> tuple[int, ...]:
-    """Put all prediction points into the pet's stronger offensive effort."""
+    """Put all prediction points into the pet's stronger offensive effort.
+
+    This is only used when the current pet has no allocated points and there
+    is therefore no allocation distribution to project forward.
+    """
     if not isinstance(total_points, int) or total_points < 0:
         raise ValueError("默认自由加点总数必须是非负整数")
     preferred_index = (
@@ -136,6 +140,37 @@ def default_prediction_points(
     return tuple(
         total_points if index == preferred_index else 0 for index in range(5)
     )
+
+
+def project_prediction_points(
+    source_points: Sequence[int], total_points: int
+) -> tuple[int, ...]:
+    """Scale a current allocation distribution to a future point budget.
+
+    Largest-remainder rounding keeps the projected total exact while
+    preserving the proportions of the current five-stat allocation.
+    """
+    if len(source_points) != 5 or any(
+        not isinstance(value, int) or value < 0 for value in source_points
+    ):
+        raise ValueError("自由加点必须是五项非负整数")
+    if not isinstance(total_points, int) or total_points < 0:
+        raise ValueError("目标自由加点总数必须是非负整数")
+    source_total = sum(source_points)
+    if source_total == 0:
+        return (0, 0, 0, 0, 0)
+
+    scaled = tuple(total_points * value / source_total for value in source_points)
+    projected = [floor(value) for value in scaled]
+    remainder = total_points - sum(projected)
+    order = sorted(
+        range(5),
+        key=lambda index: (scaled[index] - projected[index], -index),
+        reverse=True,
+    )
+    for index in order[:remainder]:
+        projected[index] += 1
+    return tuple(projected)
 
 
 def infer_allocated_points(
@@ -183,6 +218,7 @@ def predict_pet_with_unknown_points(
             basis,
             (0, 0, 0, 0, 0),
             target_growth,
+            projection_points=source_points,
         )
         prediction = replace(
             reset_prediction,
@@ -332,6 +368,8 @@ def predict_pet(
     basis: PetBasis,
     source_points: Sequence[int],
     target_growth: int | None = None,
+    *,
+    projection_points: Sequence[int] | None = None,
 ) -> PetPrediction:
     """Match an arbitrary-level panel against V15's exact ten-value model."""
     level = int(pet["level"])
@@ -383,7 +421,10 @@ def predict_pet(
     if any(not values for values in allowed_tenths):
         raise ValueError("当前努力值和自由加点无法对应此宠物的可能基数")
 
-    projected_points = default_prediction_points(pet, 98)
+    projected_source_points = points if projection_points is None else projection_points
+    projected_points = project_prediction_points(projected_source_points, 98)
+    if not any(projected_points):
+        projected_points = default_prediction_points(pet, 98)
     for tenths, _candidate_growth, paths in _iter_all_basis_candidates(
         basis, growth, allowed_tenths
     ):
