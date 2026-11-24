@@ -51,6 +51,7 @@ class WashConfig:
     targets: tuple[int, ...] | None
     max_attempts: int
     alternative_targets: tuple[tuple[int, ...] | None, ...] = ()
+    allocation_strategy: str = "default"
 
     @property
     def target_groups(self) -> tuple[tuple[int, ...], ...]:
@@ -88,6 +89,8 @@ class WashConfig:
                 raise ValueError(f"候选 {index} 至少填写一个大于 0 的期望数值")
         if not isinstance(self.max_attempts, int) or self.max_attempts <= 0:
             raise ValueError("最多洗点次数必须是正整数")
+        if self.allocation_strategy not in ("default", "none"):
+            raise ValueError("请选择有效的默认加点策略")
 
 
 @dataclass(frozen=True)

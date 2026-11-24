@@ -124,16 +124,22 @@ def automatic_target_groups(
     pet: Mapping[str, object],
     item_index: int,
     mode: str,
+    allocation_strategy: str = "default",
 ) -> tuple[tuple[int, ...], ...]:
     if item_index in (0, 1):
         raise ValueError("一键填充仅适用于包含五项属性的洗点道具")
     level = int(pet["level"])
     rebirth = int(pet["reincarnation_degree"])
-    strength_points = (0, level - 1, 0, 0, 0)
+    if allocation_strategy == "default":
+        allocation_points = default_prediction_points(pet, level - 1)
+    elif allocation_strategy == "none":
+        allocation_points = (0, 0, 0, 0, 0)
+    else:
+        raise ValueError("请选择有效的默认加点策略")
     fields = target_fields(item_index, mode)
     groups = []
     for wave, included_keys in zip(AUTO_TARGET_WAVES, AUTO_TARGET_KEYS[mode]):
-        result = scenario(apply_basis_wave(basis.base, wave), level, rebirth, strength_points)
+        result = scenario(apply_basis_wave(basis.base, wave), level, rebirth, allocation_points)
         values: dict[str, int] = {"grow_value": round_display(basis.growth)}
         values.update((key, value) for (key, _), value in zip(BASE_FIELDS, result.efforts))
         values.update((key, value) for (key, _), value in zip(DERIVED_FIELDS, result.battle))
@@ -687,7 +693,8 @@ class PetRespecApp(QMainWindow):
         config.setHorizontalSpacing(14)
         config.addWidget(self._field_label("洗点道具"), 0, 0)
         config.addWidget(self._field_label("洗点方式"), 0, 1)
-        config.addWidget(self._field_label("最多洗点次数"), 0, 2)
+        config.addWidget(self._field_label("默认加点策略"), 0, 2)
+        config.addWidget(self._field_label("最多洗点次数"), 0, 3)
         self.item_combo = QComboBox()
         self._polish_combo(self.item_combo)
         self.item_combo.currentIndexChanged.connect(self._render_targets)
@@ -705,11 +712,20 @@ class PetRespecApp(QMainWindow):
         mode_row.addWidget(self.derived_mode)
         mode_row.addWidget(self.fill_targets_button)
         config.addLayout(mode_row, 1, 1)
-        self.max_attempts_entry = _line("100")
-        config.addWidget(self.max_attempts_entry, 1, 2)
+        self.allocation_strategy_combo = QComboBox()
+        self._polish_combo(self.allocation_strategy_combo)
+        self.allocation_strategy_combo.addItem("默认加点", "default")
+        self.allocation_strategy_combo.addItem("无加点", "none")
+        self.allocation_strategy_combo.setFixedWidth(
+            self.allocation_strategy_combo.sizeHint().width() + 16
+        )
+        config.addWidget(self.allocation_strategy_combo, 1, 2)
+        self.max_attempts_entry = _line("100", 90)
+        config.addWidget(self.max_attempts_entry, 1, 3)
         config.setColumnStretch(0, 1)
         config.setColumnStretch(1, 1)
-        config.setColumnStretch(2, 1)
+        config.setColumnStretch(2, 0)
+        config.setColumnStretch(3, 0)
         layout.addWidget(config_panel)
 
         target_header = QHBoxLayout()
@@ -1017,6 +1033,9 @@ class PetRespecApp(QMainWindow):
 
     def _item_index(self) -> int:
         return max(0, self.item_combo.currentIndex())
+
+    def _allocation_strategy(self) -> str:
+        return str(self.allocation_strategy_combo.currentData() or "default")
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -1543,7 +1562,13 @@ class PetRespecApp(QMainWindow):
         if pet is None or self.simulator_basis is None:
             return
         try:
-            groups = automatic_target_groups(self.simulator_basis, pet, self._item_index(), self._mode())
+            groups = automatic_target_groups(
+                self.simulator_basis,
+                pet,
+                self._item_index(),
+                self._mode(),
+                self._allocation_strategy(),
+            )
         except (KeyError, TypeError, ValueError) as exc:
             self._show_error("无法一键填充", exc)
             return
@@ -1572,6 +1597,7 @@ class PetRespecApp(QMainWindow):
                 targets=slots[0],
                 alternative_targets=(slots[1], slots[2]),
                 max_attempts=int(self.max_attempts_entry.text().strip()),
+                allocation_strategy=self._allocation_strategy(),
             )
             config.validate()
             if not is_pet_washable(self.selected_pet):
@@ -2336,6 +2362,9 @@ class PetRespecApp(QMainWindow):
         self.fill_targets_button.setEnabled(
             idle and self.connected and bag_selected and self.simulator_basis is not None and self._item_index() not in (0, 1)
         )
+        self.allocation_strategy_combo.setEnabled(
+            idle and self._item_index() not in (0, 1)
+        )
         self.exchange_big_pill_button.setEnabled(idle and self.connected and self._misc_total(GIANT_ROCK_FRAGMENT_ID) >= 2)
         self.use_book_button.setEnabled(idle and self.connected and self._misc_total(EXPERIENCE_BOOK_ID) >= 1)
         has_exp = idle and self.connected and bag_selected and bool(self.exp_tree_experience)
@@ -2548,6 +2577,9 @@ class PetRespecApp(QMainWindow):
                 for entry, value in zip(entries, targets):
                     entry.setText(str(value))
         self.max_attempts_entry.setText(str(config.max_attempts))
+        strategy_index = self.allocation_strategy_combo.findData(config.allocation_strategy)
+        if strategy_index >= 0:
+            self.allocation_strategy_combo.setCurrentIndex(strategy_index)
         self.notebook.setCurrentWidget(self.result_tab)
         self._sync_controls()
 
