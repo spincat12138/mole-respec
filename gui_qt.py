@@ -7,10 +7,11 @@ import queue
 import sys
 import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from PyQt6.QtCore import QSize, Qt, QTimer
+from PyQt6.QtCore import QSettings, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QCloseEvent, QIcon, QIntValidator, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -55,6 +56,7 @@ from pet_prediction import (
     scenario,
     simulate_base,
 )
+from pushplus import send_pushplus
 from pet_respec import (
     BASE_FIELDS,
     DERIVED_FIELDS,
@@ -100,6 +102,31 @@ RESULT_REASON = {
     "inventory": "道具数量不足",
     "stopped": "已由用户停止",
 }
+
+
+def build_wash_notification_metadata(
+    pet_name: str,
+    pet_type: str,
+    attempts: int,
+    item_type: str,
+    remaining_items: int,
+    started_at: datetime,
+    stopped_at: datetime,
+    reached: bool,
+) -> tuple[str, ...]:
+    """Build the common metadata shared by successful and failed pushes."""
+    time_format = "%Y-%m-%d %H:%M:%S.%f"
+    return (
+        f"**宠物昵称：** {pet_name}",
+        f"**宠物类型：** {pet_type}",
+        f"**洗宠次数：** {attempts}次",
+        f"**剩余道具：** {item_type} {remaining_items}个",
+        f"**开始时间：** {started_at.strftime(time_format)[:-3]}",
+        f"**停止时间：** {stopped_at.strftime(time_format)[:-3]}",
+        f"**结果：** {'已达到预期目标' if reached else '未达到预期目标'}",
+    )
+
+
 AUTO_TARGET_WAVES = (
     (5, 5, -5, 0, -5),
     (-5, 5, 0, 5, -5),
@@ -206,6 +233,8 @@ class PetRespecApp(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.backend = ProtocolBackend()
+        self.settings = QSettings("MoleRespec", "MoleRespec")
+        self.pushplus_token = str(self.settings.value("pushplus/token", "") or "").strip()
         self.skill_names = load_skill_names()
         self.pet_egg_items = self.backend.pet_egg_items
         self.map_locations = MAP_LOCATIONS
@@ -923,6 +952,20 @@ class PetRespecApp(QMainWindow):
         layout.setContentsMargins(10, 12, 10, 10)
         layout.setSpacing(8)
         layout.addWidget(self._page_title("杂项操作"))
+        pushplus_frame = QFrame()
+        pushplus_frame.setObjectName("subtlePanel")
+        pushplus_row = QHBoxLayout(pushplus_frame)
+        pushplus_row.addWidget(QLabel("PushPlus Token"))
+        self.pushplus_token_entry = _line(self.pushplus_token)
+        self.pushplus_token_entry.setPlaceholderText("留空则关闭洗宠消息提示")
+        self.save_pushplus_button = self._button("保存 Token", self._save_pushplus_token)
+        self._set_standard_icon(
+            self.save_pushplus_button, QStyle.StandardPixmap.SP_DialogSaveButton
+        )
+        pushplus_row.addWidget(self.pushplus_token_entry, 1)
+        pushplus_row.addWidget(self.save_pushplus_button)
+        self.pushplus_token_entry.returnPressed.connect(self._save_pushplus_token)
+        layout.addWidget(pushplus_frame)
         self.fragment_quantity_label = self._muted("背包 - | 仓库 - | 合计 -")
         self.book_quantity_label = self._muted("背包 - | 仓库 - | 合计 -")
         self.exp_tree_quantity_label = self._muted("剩余经验 -")
@@ -1005,6 +1048,17 @@ class PetRespecApp(QMainWindow):
         grid.setColumnStretch(3, 1)
         layout.addWidget(egg_map)
         layout.addStretch()
+
+    def _save_pushplus_token(self) -> None:
+        self.pushplus_token = self.pushplus_token_entry.text().strip()
+        if self.pushplus_token:
+            self.settings.setValue("pushplus/token", self.pushplus_token)
+            message = "PushPlus Token 已保存，洗宠结束后会推送消息"
+        else:
+            self.settings.remove("pushplus/token")
+            message = "PushPlus 消息提示已关闭"
+        self.settings.sync()
+        self._set_status(message)
 
     def _build_result_tab(self) -> None:
         layout = QVBoxLayout(self.result_tab)
@@ -1613,6 +1667,7 @@ class PetRespecApp(QMainWindow):
         self.progress_text_label.setText(f"0 / {config.max_attempts}")
         self.notebook.setCurrentWidget(self.result_tab)
         self._set_busy("wash", "洗点任务已开始")
+        wash_started_at = datetime.now().astimezone()
 
         def work() -> None:
             try:
@@ -1622,7 +1677,13 @@ class PetRespecApp(QMainWindow):
                     self.stop_event.is_set,
                     lambda progress: self.events.put(("progress", (config, progress))),
                 )
-                self.events.put(("finished", (config, result)))
+                wash_stopped_at = datetime.now().astimezone()
+                self.events.put(
+                    (
+                        "finished",
+                        (config, result, wash_started_at, wash_stopped_at),
+                    )
+                )
             except Exception as exc:
                 self.events.put(("error", ("wash", exc)))
 
@@ -2441,6 +2502,12 @@ class PetRespecApp(QMainWindow):
         if event == "teleport_completed":
             self._set_busy(None, payload)
             return
+        if event == "notification_sent":
+            self._set_status("洗宠结果已通过 PushPlus 推送")
+            return
+        if event == "notification_failed":
+            self._set_status(f"洗宠结果已完成，但 PushPlus 推送失败：{payload}")
+            return
         if event == "storage_info":
             request_id, pet = payload
             if request_id != self.storage_request_id:
@@ -2513,14 +2580,14 @@ class PetRespecApp(QMainWindow):
             self._handle_progress(*payload)
             return
         if event == "finished":
-            config, result = payload
+            config, result, started_at, stopped_at = payload
             self.bag_pets = [dict(result.final_pet) if int(pet["pet_id"]) == config.pet_id else pet for pet in self.bag_pets]
             self.item_quantities[self.backend.item_ids[config.item_index]] = result.remaining_items
             self._set_busy(None)
             self._render_pet_list(config.pet_id)
             self._update_item_options()
             self._restore_wash_rule(config)
-            self._handle_result(config, result)
+            self._handle_result(config, result, started_at, stopped_at)
             return
         if event == "error":
             action, exc = payload
@@ -2554,7 +2621,13 @@ class PetRespecApp(QMainWindow):
         self.result_table.scrollToBottom()
         self._set_status(f"第 {progress.attempt} 次完成，{ITEM_TYPES[config.item_index]}剩余 {progress.remaining_items} 个")
 
-    def _handle_result(self, config: WashConfig, result: WashResult) -> None:
+    def _handle_result(
+        self,
+        config: WashConfig,
+        result: WashResult,
+        started_at: datetime,
+        stopped_at: datetime,
+    ) -> None:
         reason = RESULT_REASON.get(result.reason, result.reason)
         self.progress.setValue(result.attempts)
         self.progress_text_label.setText(f"{result.attempts} / {config.max_attempts}")
@@ -2565,6 +2638,97 @@ class PetRespecApp(QMainWindow):
             f"{reason}。共洗点 {result.attempts} 次，道具剩余 {result.remaining_items} 个。" + "  ".join(changes)
         )
         self._set_status(reason)
+        self._send_wash_notification(config, result, started_at, stopped_at)
+
+    @staticmethod
+    def _format_fields(pet: Mapping[str, object], fields: tuple[tuple[str, str], ...]) -> str:
+        return "；".join(f"{label} {int(pet[key])}" for key, label in fields)
+
+    def _wash_notification_content(
+        self,
+        config: WashConfig,
+        result: WashResult,
+        started_at: datetime,
+        stopped_at: datetime,
+    ) -> tuple[str, str]:
+        pet = result.final_pet
+        species = self.backend.pet_type_name(int(pet["type_id"]))
+        item_type = ITEM_TYPES[config.item_index]
+        title = "洗宠成功" if result.reached else "洗宠结束"
+        content_lines = list(
+            build_wash_notification_metadata(
+                str(pet.get("nick", species)),
+                species,
+                result.attempts,
+                item_type,
+                result.remaining_items,
+                started_at,
+                stopped_at,
+                result.reached,
+            )
+        )
+        if not result.reached:
+            return title, "\n\n".join(content_lines)
+        content_lines.extend(
+            (
+                f"**基础五项：** {self._format_fields(pet, BASE_FIELDS)}",
+                f"**战斗面板：** {self._format_fields(pet, DERIVED_FIELDS)}",
+            )
+        )
+        try:
+            server = "active" if self.backend.server >= 11 else "normal"
+            basis = find_pet_basis(species, server)
+            points = default_prediction_points(pet, int(pet["attr_point_applied"]))
+            prediction = predict_pet(pet, basis, points, int(pet["grow_value"]))
+            candidate = prediction.candidates[0]
+            base_text = "；".join(
+                f"{label} {value:g}（{wave:+g}）"
+                for (key, label), value, wave in zip(BASE_FIELDS, candidate.base, candidate.base_wave)
+            )
+            content_lines.append(
+                f"**0转基数：** {base_text}"
+                f"\n\n（共 {prediction.candidate_count} 套候选，展示权重最高结果）"
+            )
+            ten_turn = candidate.scenarios[2]
+            ten_turn_efforts = "；".join(
+                f"{label} {value}"
+                for (_key, label), value in zip(BASE_FIELDS, ten_turn.efforts)
+            )
+            ten_turn_battle = "；".join(
+                f"{label} {value}"
+                for (_key, label), value in zip(DERIVED_FIELDS, ten_turn.battle)
+            )
+            content_lines.append(
+                "**10转99级预测：**"
+                f"\n\n基础五项：{ten_turn_efforts}"
+                f"\n\n战斗面板：{ten_turn_battle}"
+            )
+        except (KeyError, LookupError, OSError, TypeError, ValueError) as exc:
+            content_lines.append(f"**0转基数：** 计算失败：{exc}")
+        return title, "\n\n".join(content_lines)
+
+    def _send_wash_notification(
+        self,
+        config: WashConfig,
+        result: WashResult,
+        started_at: datetime,
+        stopped_at: datetime,
+    ) -> None:
+        token = self.pushplus_token.strip()
+        if not token:
+            return
+        title, content = self._wash_notification_content(
+            config, result, started_at, stopped_at
+        )
+
+        def work() -> None:
+            try:
+                send_pushplus(token, title, content)
+                self.events.put(("notification_sent", None))
+            except Exception as exc:
+                self.events.put(("notification_failed", exc))
+
+        self._run_worker(work)
 
     def _restore_wash_rule(self, config: WashConfig) -> None:
         self.item_combo.setCurrentIndex(config.item_index)
