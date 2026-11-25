@@ -18,6 +18,7 @@ EXPERIENCE_BOOK_ID = 350050
 MISC_ITEM_IDS = (GIANT_ROCK_FRAGMENT_ID, EXPERIENCE_BOOK_ID)
 PET_NICKNAME_MAX_BYTES = 16
 PET_SKILL_TRAINER_NPC_IDS = {1: 1201, 8: 1208}
+PET_SKILL_TRAINING_LOCATION = (11206, 660, 399)
 PET_SKILL_OPTIONS = (
     ("崩牙", 5103, 8),
     ("狂击", 5106, 8),
@@ -56,6 +57,7 @@ class ProtocolBackend:
         self._uid_bytes: list[int] | None = None
         self.server = 0
         self.uid = 0
+        self.current_location: tuple[int, int, int, int] | None = None
 
     @staticmethod
     def _load_moer() -> ModuleType:
@@ -103,17 +105,28 @@ class ProtocolBackend:
         # get_account() hashes the plain text once before login_taomi() hashes it again.
         account_password = hashlib.md5(password.encode("utf-8")).hexdigest()
         result = self._moer.login_taomi(
-            uid, account_password, model=1, fwq=server, return_server=True
+            uid,
+            account_password,
+            model=1,
+            fwq=server,
+            return_server=True,
+            return_user_info=True,
         )
         if result is None:
             raise ConnectionError("登录失败，请检查账号、密码和服务器")
-        login_socket, game_socket, uid_bytes, actual_server = result
+        login_socket, game_socket, uid_bytes, actual_server, user_info = result
         game_socket.settimeout(12)
         self._login_socket = login_socket
         self._game_socket = game_socket
         self._uid_bytes = uid_bytes
         self.server = actual_server
         self.uid = uid
+        self.current_location = (
+            int(user_info["map_id"]),
+            int(user_info["map_type"]),
+            int(user_info["pos_x"]),
+            int(user_info["pos_y"]),
+        )
         return actual_server
 
     def close(self) -> None:
@@ -123,6 +136,7 @@ class ProtocolBackend:
         self._uid_bytes = None
         self.server = 0
         self.uid = 0
+        self.current_location = None
         for sock in sockets:
             if sock is None:
                 continue
@@ -181,6 +195,7 @@ class ProtocolBackend:
         if unknown_ids:
             raise ValueError(f"不支持的宠物技能ID：{unknown_ids[0]}")
 
+        self._enter_map(*PET_SKILL_TRAINING_LOCATION)
         game_socket, uid_bytes = self._session()
         results = []
         for skill_id in selected_ids:
@@ -267,6 +282,9 @@ class ProtocolBackend:
         self._moer._open_pet_eggs(game_socket, uid_bytes, int(item_id), count)
 
     def teleport_to_map(self, map_id: int, x: int, y: int) -> None:
+        self._enter_map(map_id, x, y)
+
+    def _enter_map(self, map_id: int, x: int, y: int) -> None:
         for value, label in ((map_id, "地图编号"), (x, "横坐标"), (y, "纵坐标")):
             if (
                 not isinstance(value, int)
@@ -275,8 +293,8 @@ class ProtocolBackend:
             ):
                 raise ValueError(f"{label}必须是 0 到 65535 之间的整数")
         game_socket, uid_bytes = self._session()
-        packet = self._moer._build_map_enter_packet(uid_bytes, map_id, x, y)
-        game_socket.sendall(packet)
+        self._moer._enter_map(game_socket, uid_bytes, map_id, x, y)
+        self.current_location = (map_id, 0, x, y)
 
     def reset_pet_attr_points(self, pet_id: int) -> dict[str, object]:
         game_socket, uid_bytes = self._session()

@@ -113,10 +113,12 @@ def build_wash_notification_metadata(
     started_at: datetime,
     stopped_at: datetime,
     reached: bool,
+    server: int | None = None,
+    current_map: str | None = None,
 ) -> tuple[str, ...]:
-    """Build the common metadata shared by successful and failed pushes."""
+    """Build notification metadata, including location for successful washes."""
     time_format = "%Y-%m-%d %H:%M:%S.%f"
-    return (
+    lines = [
         f"**宠物昵称：** {pet_name}",
         f"**宠物类型：** {pet_type}",
         f"**洗宠次数：** {attempts}次",
@@ -124,7 +126,32 @@ def build_wash_notification_metadata(
         f"**开始时间：** {started_at.strftime(time_format)[:-3]}",
         f"**停止时间：** {stopped_at.strftime(time_format)[:-3]}",
         f"**结果：** {'已达到预期目标' if reached else '未达到预期目标'}",
+    ]
+    if reached:
+        if server is not None:
+            lines.insert(2, f"**服务器：** {server}服")
+        if current_map is not None:
+            lines.insert(3, f"**当前地图：** {current_map}")
+    return tuple(lines)
+
+
+def format_map_location(
+    location: tuple[int, int, int, int] | None,
+    *,
+    include_coordinates: bool = True,
+) -> str:
+    """Format a backend location using the extracted client map names."""
+    if location is None:
+        return "未知"
+    map_id, _map_type, x, y = location
+    map_name = next(
+        (name for candidate, name, _x, _y in MAP_LOCATIONS if candidate == map_id),
+        "未知地图",
     )
+    text = f"{map_name}（{map_id}）"
+    if include_coordinates:
+        text += f"，坐标 {x}, {y}"
+    return text
 
 
 AUTO_TARGET_WAVES = (
@@ -1019,9 +1046,9 @@ class PetRespecApp(QMainWindow):
         exp_layout.addWidget(self.allocate_all_experience_button)  # type: ignore[union-attr]
         layout.addWidget(exp)
 
-        egg_map = QFrame()
-        egg_map.setObjectName("subtlePanel")
-        grid = QGridLayout(egg_map)
+        eggs = QFrame()
+        eggs.setObjectName("subtlePanel")
+        grid = QGridLayout(eggs)
         grid.addWidget(QLabel("开启精灵蛋"), 0, 0)
         self.pet_egg_combo = QComboBox()
         self._polish_combo(self.pet_egg_combo)
@@ -1034,7 +1061,14 @@ class PetRespecApp(QMainWindow):
         grid.addWidget(self.pet_egg_combo, 1, 0)
         grid.addWidget(self.pet_egg_count_entry, 1, 1)
         grid.addWidget(self.open_pet_eggs_button, 1, 2)
-        grid.addWidget(QLabel("地图传送"), 0, 3)
+        layout.addWidget(eggs)
+
+        map_frame = QFrame()
+        map_frame.setObjectName("subtlePanel")
+        map_row = QHBoxLayout(map_frame)
+        map_row.addWidget(QLabel("地图传送"))
+        self.current_location_label = self._muted("当前位置：未连接")
+        map_row.addWidget(self.current_location_label)
         self.map_combo = QComboBox()
         self._polish_combo(self.map_combo)
         self.map_combo.addItems([f"{name}（{map_id}）" for map_id, name, _x, _y in self.map_locations])
@@ -1042,11 +1076,9 @@ class PetRespecApp(QMainWindow):
         self._set_standard_icon(
             self.teleport_button, QStyle.StandardPixmap.SP_ArrowRight
         )
-        grid.addWidget(self.map_combo, 1, 3)
-        grid.addWidget(self.teleport_button, 1, 4)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(3, 1)
-        layout.addWidget(egg_map)
+        map_row.addWidget(self.map_combo, 1)
+        map_row.addWidget(self.teleport_button)
+        layout.addWidget(map_frame)
         layout.addStretch()
 
     def _save_pushplus_token(self) -> None:
@@ -1160,6 +1192,7 @@ class PetRespecApp(QMainWindow):
         self._update_item_options()
         self._render_misc_quantities()
         self._render_exp_tree_experience()
+        self._render_current_location()
         self._sync_controls()
 
     def _refresh(self) -> None:
@@ -1959,7 +1992,10 @@ class PetRespecApp(QMainWindow):
     def _learn_selected_pet_skills(self, pet: Mapping[str, object], skill_ids: tuple[int, ...]) -> None:
         pet_id = int(pet["pet_id"])
         names = [name for name, skill_id, _level in PET_SKILL_OPTIONS if skill_id in skill_ids]
-        self._set_busy("learn_pet_skills", f"正在为 {pet['nick']} 学习 {len(skill_ids)} 个技能")
+        self._set_busy(
+            "learn_pet_skills",
+            f"正在前往皮克司研究所并为 {pet['nick']} 学习 {len(skill_ids)} 个技能",
+        )
 
         def work() -> None:
             try:
@@ -2185,6 +2221,14 @@ class PetRespecApp(QMainWindow):
         text = "剩余经验 -" if not self.connected or self.exp_tree_experience is None else f"剩余经验 {self.exp_tree_experience}"
         self.exp_tree_quantity_label.setText(text)
 
+    def _render_current_location(self) -> None:
+        if not self.connected:
+            self.current_location_label.setText("当前位置：未连接")
+            return
+        self.current_location_label.setText(
+            f"当前位置：{format_map_location(self.backend.current_location)}"
+        )
+
     def _update_item_options(self) -> None:
         selected = self._item_index()
         self.item_combo.blockSignals(True)
@@ -2390,7 +2434,7 @@ class PetRespecApp(QMainWindow):
         def work() -> None:
             try:
                 self.backend.teleport_to_map(map_id, x, y)
-                self.events.put(("teleport_completed", f"已发送前往{name}（{map_id}）的传送请求"))
+                self.events.put(("teleport_completed", f"已传送到{name}（{map_id}）"))
             except Exception as exc:
                 self.events.put(("error", ("teleport", exc)))
 
@@ -2467,6 +2511,7 @@ class PetRespecApp(QMainWindow):
             self._update_item_options()
             self._render_misc_quantities()
             self._render_exp_tree_experience()
+            self._render_current_location()
             return
         if event == "refreshed":
             self.bag_pets, self.storage_pets, self.item_quantities, self.misc_item_quantities, self.exp_tree_experience = payload
@@ -2501,6 +2546,7 @@ class PetRespecApp(QMainWindow):
             return
         if event == "teleport_completed":
             self._set_busy(None, payload)
+            self._render_current_location()
             return
         if event == "notification_sent":
             self._set_status("洗宠结果已通过 PushPlus 推送")
@@ -2565,6 +2611,7 @@ class PetRespecApp(QMainWindow):
             pet_id, names, self.bag_pets = payload
             self._set_busy(None, f"已学习技能：{'、'.join(names)}")
             self._render_pet_list(pet_id)
+            self._render_current_location()
             return
         if event == "pet_skills_failed":
             pet_id, bag_pets, exc = payload
@@ -2573,6 +2620,7 @@ class PetRespecApp(QMainWindow):
             self._set_busy(None)
             if bag_pets is not None:
                 self._render_pet_list(pet_id)
+            self._render_current_location()
             self._set_status(f"学习技能失败：{exc}")
             self._show_error("学习技能失败", exc)
             return
@@ -2665,6 +2713,15 @@ class PetRespecApp(QMainWindow):
                 started_at,
                 stopped_at,
                 result.reached,
+                server=self.backend.server if result.reached else None,
+                current_map=(
+                    format_map_location(
+                        self.backend.current_location,
+                        include_coordinates=False,
+                    )
+                    if result.reached
+                    else None
+                ),
             )
         )
         if not result.reached:

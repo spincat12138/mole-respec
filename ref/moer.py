@@ -243,7 +243,9 @@ def _get_socket_session(sock):
         return session
 
 
-def login_taomi(uid, pwd, model=1, fwq=0, return_server=False):
+def login_taomi(
+        uid, pwd, model=1, fwq=0, return_server=False,
+        return_user_info=False):
     uid_hex = hex(uid)
     str1 = ''.join(uid_hex)
     str2 = list()
@@ -348,6 +350,8 @@ def login_taomi(uid, pwd, model=1, fwq=0, return_server=False):
     print('昵称：%s，职业：%s，等级：%s' % (
         user_info['nick'], profession, user_info['level']))
 
+    if return_server and return_user_info:
+        return s, s2, str2, fwq, user_info
     if return_server:
         return s, s2, str2, fwq
     return s, s2, str2
@@ -1463,6 +1467,16 @@ def _build_map_enter_packet(str2, map_id, entry_x, entry_y, sequence=None):
                   (entry_x >> 8) & 0xff, entry_x & 0xff,
                   0, 0, (entry_y >> 8) & 0xff, entry_y & 0xff,
                   0, 0, 0, 0])
+
+
+def _enter_map(s, str2, map_id, entry_x, entry_y, timeout=10):
+    """进入指定地图，并等待服务端确认 1004 请求成功。"""
+    packet = _build_map_enter_packet(str2, map_id, entry_x, entry_y)
+    s.sendall(packet)
+    response = _get_socket_session(s).recv_packet(
+        expected_command=1004, timeout=timeout)
+    _parse_tmf_response_payload(response, 1004)
+    return response
 
 
 def exchangelb(s, str2, type, count):
