@@ -30,7 +30,8 @@ COPY *.py ./
 COPY ref/moer.py ref/item_names.py ref/pet_names.py ref/pet_bases.json ref/skills.xml ref/logo.webp ref/thanks_header.png ./ref/
 COPY docker/ /opt/mole-respec/
 # Preserve the desktop database path while storing the actual file in the volume.
-RUN ln -s /data/pet_results.db /app/pet_results.db
+RUN ln -s /data/pet_results.db /app/pet_results.db \
+    && install -m 644 /opt/mole-respec/index.html /usr/share/novnc/index.html
 
 USER app
 EXPOSE 6080

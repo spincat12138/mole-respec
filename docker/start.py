@@ -15,7 +15,7 @@ from urllib.request import urlopen
 
 PASSWORD_FILE = Path("/run/secrets/vnc_password")
 VNC_ADDRESS = ("127.0.0.1", 5900)
-WEB_URL = "http://127.0.0.1:6080/vnc.html"
+WEB_URL = "http://127.0.0.1:6080/"
 
 
 def screen_size() -> str:
@@ -143,7 +143,7 @@ def main() -> int:
         ])
         desktop.wait_ready(check_web)
         desktop.start("Mole Respec", [sys.executable, "/app/app.py"])
-        print("Desktop ready: /vnc.html?autoconnect=1&resize=scale", flush=True)
+        print("Desktop ready: open http://<host>:6080/", flush=True)
         while True:
             desktop.check_processes()
             time.sleep(0.5)

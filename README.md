@@ -18,7 +18,7 @@
 
 - 根目录：程序入口 `app.py`、界面及业务模块、依赖清单和使用说明；可执行文件 `mole-respec.exe` 与运行数据库 `pet_results.db` 也位于此处。
 - `ref/`：协议参考代码、名称映射、预测和技能数据、界面图片、测试脚本及数据提取脚本。此目录包含程序运行所需资源，不能整体删除。
-- `.github/`：Windows 可执行文件构建、Docker 桌面测试和 GHCR 镜像发布配置。
+- `.github/`：Windows 可执行文件构建和 GHCR 镜像发布配置。
 
 在根目录执行 `python -m unittest discover -s ref -p 'test_*.py'` 可运行测试。
 
@@ -39,11 +39,13 @@ python app.py
 
 ### 使用 GitHub 构建并发布镜像
 
-将项目及 `.github/workflows/publish-docker.yml` 提交到 GitHub 默认分支后，在仓库 **Actions → Publish Docker image → Run workflow** 手动触发发布。工作流使用 GitHub 自动提供的 `GITHUB_TOKEN` 登录 GHCR，无需额外配置 Token，将当前选择分支的源码构建为 `linux/amd64` 镜像（适用于 Intel/AMD 飞牛设备），发布到：
+将项目及 `.github/workflows/publish-docker.yml` 推送到 GitHub 后，每次推送都会自动构建并发布镜像。工作流使用 GitHub 自动提供的 `GITHUB_TOKEN` 登录 GHCR，无需额外配置 Token，将该次推送的源码构建为 `linux/amd64` 镜像（适用于 Intel/AMD 飞牛设备），发布到：
 
 ```text
 ghcr.io/spincat12138/mole-respec:latest
 ```
+
+所有分支的推送都会更新同一个 `latest` 标签。也可以在仓库 **Actions → Publish Docker image → Run workflow** 手动重新构建。
 
 首次发布后，在 GitHub 的 **Packages → mole-respec → Package settings → Change visibility** 中将包设为 **Public**，飞牛即可免登录拉取。私有镜像需要先使用具有 `read:packages` 权限的个人访问令牌登录 GHCR。如果使用 Fork，请同时修改发布工作流和 `compose.yaml` 中的镜像所属账号。
 
@@ -63,7 +65,7 @@ docker compose logs -f --tail=100
 
 首次拉取需要飞牛能访问 `ghcr.io`。Compose 项目必须能读取同目录的 `vnc_password.txt`；如果通过飞牛界面导入，请一并准备密码文件。
 
-浏览器打开 `http://飞牛IP:6080/vnc.html?autoconnect=1&resize=scale`，输入上述 VNC 密码，即可操作程序。游戏账号仍在原界面输入。关闭浏览器不会停止洗宠，重新打开可以回到同一会话；多个浏览器连接共享同一个桌面和游戏登录。
+浏览器或飞牛 App 直接打开 `http://飞牛IP:6080/` 即可，入口地址无需添加路径或参数。首页会自动跳转到 noVNC，启用自动连接和画面缩放；输入上述 VNC 密码即可操作程序。游戏账号仍在原界面输入。关闭浏览器不会停止洗宠，重新打开可以回到同一会话；多个浏览器连接共享同一个桌面和游戏登录。
 
 默认只发布 `6080`，VNC 的 `5900` 和 X11 不向宿主机开放。此 HTTP 地址用于可信局域网；需要外网访问时，通过 HTTPS 反向代理（启用 WebSocket）或 VPN 访问，不要直接将 `6080` 映射到公网。VNC 密码用于访问控制，不提供传输加密。
 
@@ -109,15 +111,13 @@ docker compose up -d
 
 ### 维护与排查
 
-- 更新：先在 GitHub 手动运行镜像发布工作流，成功后在飞牛执行 `docker compose pull` 和 `docker compose up -d`，数据卷继续保留。
+- 更新：推送代码后，在 GitHub Actions 确认自动构建并发布成功，再在飞牛执行 `docker compose pull` 和 `docker compose up -d`，数据卷继续保留。
 - 修改 VNC 密码：更新 `vnc_password.txt` 后执行 `docker compose restart`。
 - 调整分辨率：修改 `.env` 的 `SCREEN_WIDTH` / `SCREEN_HEIGHT` 后执行 `docker compose up -d`；范围分别为 `1080–4096`、`824–4096`。浏览器采用缩放方式，不会自动改变虚拟屏幕尺寸。
 - 在界面关闭主窗口会使容器退出，Compose 随后按 `unless-stopped` 策略重新启动；需要停止服务时执行 `docker compose stop`。
 - 启动失败先看 `docker compose logs --tail=100`。启动器等待 Xvfb、VNC 和 noVNC 就绪后再启动应用；任一进程退出都会结束容器并输出原因，避免只剩空白网页。健康检查同时检测 X11、VNC 与网页。
 - `Permission denied`：检查密码文件对容器用户可读，挂载的数据目录可写。默认命名卷已设置目录权限。
 - 镜像拉取失败：检查镜像是否已发布、包可见性或 GHCR 登录凭据，以及飞牛到 `ghcr.io` 的网络。本地构建下载失败则检查 Docker Hub、Debian 与 PyPI 的访问。
-
-仓库中的 `Test Docker desktop` 工作流通过 `compose.build.yaml` 从本次提交的源码构建镜像、通过真实浏览器完成 noVNC 密码认证并截取桌面，再重建容器验证数据库和 Qt 设置持久化。它独立于手动发布工作流，不依赖已有 GHCR 镜像，也不登录游戏；建议确认该测试通过后再发布。Windows 本地测试不能代替这项 Linux 容器验证。
 
 相关说明：[GitHub 发布 Docker 镜像](https://docs.github.com/en/actions/tutorials/publish-packages/publish-docker-images)、[GHCR 权限与登录](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)、[Docker Compose secrets](https://docs.docker.com/compose/how-tos/use-secrets/)、[noVNC 浏览器连接参数](https://github.com/novnc/noVNC/blob/master/docs/EMBEDDING.md)、[x11vnc 密码文件与监听配置](https://github.com/LibVNC/x11vnc/blob/master/doc/OPTIONS.md)。
 

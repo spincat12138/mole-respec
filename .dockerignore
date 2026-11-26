@@ -17,9 +17,6 @@ build
 !.env.example
 vnc_password.txt
 data
-node_modules
-artifacts
 ref/test_*.py
-docker/test_*.py
 ref/index.html
 ref/extract_prediction_data.py
