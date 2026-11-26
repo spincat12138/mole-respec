@@ -1,0 +1,56 @@
+name: Test Docker desktop
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      COMPOSE_FILE: compose.yaml:compose.build.yaml
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test startup boundaries and process lifecycle
+        run: timeout 60s python3 -m unittest discover -s docker -p 'test_*.py'
+
+      - name: Build and start desktop
+        run: |
+          openssl rand -hex 4 > vnc_password.txt
+          docker compose up -d --build --wait --wait-timeout 90
+
+      - name: Install browser smoke test dependencies
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+
+      - name: Connect to the real desktop through noVNC
+        run: node docker/smoke.cjs
+
+      - name: Verify persistence across container recreation
+        run: |
+          docker compose exec -T mole-respec python /opt/mole-respec/check_storage.py write
+          docker compose up -d --force-recreate --wait --wait-timeout 90
+          docker compose exec -T mole-respec python /opt/mole-respec/check_storage.py verify
+
+      - name: Show container logs
+        if: always()
+        run: docker compose logs --no-color
+
+      - name: Upload desktop screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-desktop
+          path: artifacts/desktop.png
+          if-no-files-found: ignore
+
+      - name: Stop containers
+        if: always()
+        run: docker compose down --volumes

@@ -15,3 +15,8 @@ pet_results.db
 ref/test_pet_respec.py
 
 *.exe
+
+# Container deployment secrets and bind-mounted data.
+.env
+vnc_password.txt
+data/

@@ -1,0 +1,4 @@
+services:
+  mole-respec:
+    build: .
+    image: mole-respec:local

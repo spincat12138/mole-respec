@@ -1,0 +1,26 @@
+services:
+  mole-respec:
+    image: ghcr.io/spincat12138/mole-respec:latest
+    restart: unless-stopped
+    ports:
+      - "${NOVNC_BIND_ADDRESS:-0.0.0.0}:${NOVNC_PORT:-6080}:6080"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      SCREEN_WIDTH: ${SCREEN_WIDTH:-1440}
+      SCREEN_HEIGHT: ${SCREEN_HEIGHT:-900}
+    secrets:
+      - vnc_password
+    volumes:
+      - mole-respec-data:/data
+    # Discard X11 sockets/locks and the normalized password on every restart.
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    shm_size: "256mb"
+    stop_grace_period: 30s
+
+secrets:
+  vnc_password:
+    file: ./vnc_password.txt
+
+volumes:
+  mole-respec-data:
