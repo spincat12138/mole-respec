@@ -94,8 +94,8 @@ COLORS = {
 }
 
 APP_USER_MODEL_ID = "mole-respec.desktop"
-APP_ICON_PATH = Path(__file__).resolve().with_name("logo.webp")
-THANKS_IMAGE_PATH = Path(__file__).resolve().with_name("thanks_header.png")
+APP_ICON_PATH = Path(__file__).resolve().parent / "ref" / "logo.webp"
+THANKS_IMAGE_PATH = Path(__file__).resolve().parent / "ref" / "thanks_header.png"
 RESULT_REASON = {
     "target": "已达到期望值",
     "limit": "已达到次数上限",

@@ -38,7 +38,7 @@ jobs:
           @'
           from PIL import Image
 
-          image = Image.open("logo.webp").convert("RGBA")
+          image = Image.open("ref/logo.webp").convert("RGBA")
           image.thumbnail((256, 256), Image.Resampling.LANCZOS)
           canvas = Image.new("RGBA", (256, 256), (255, 255, 255, 255))
           canvas.alpha_composite(
@@ -62,8 +62,8 @@ jobs:
           enable-plugins: pyqt6
           include-module: moer,item_names,pet_names
           include-data-files: |
-            logo.webp=logo.webp
-            thanks_header.png=thanks_header.png
+            ref/logo.webp=ref/logo.webp
+            ref/thanks_header.png=ref/thanks_header.png
             ref/pet_bases.json=ref/pet_bases.json
             ref/skills.xml=ref/skills.xml
           report: build/nuitka-report.xml
@@ -84,8 +84,8 @@ jobs:
               ForEach-Object { $_.name.Replace("\", "/") }
           )
           $required = @(
-            "logo.webp"
-            "thanks_header.png"
+            "ref/logo.webp"
+            "ref/thanks_header.png"
             "ref/pet_bases.json"
             "ref/skills.xml"
           )

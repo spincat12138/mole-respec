@@ -10,8 +10,8 @@ build/
 *.onefile-build/
 
 ref/index.html
-tools/
+ref/extract_prediction_data.py
 pet_results.db
-test_pet_respec.py
+ref/test_pet_respec.py
 
 *.exe
